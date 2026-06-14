@@ -1,0 +1,63 @@
+Copyright (c) 2022-23 CD Projekt Red. All Rights Reserved.
+Created in collaboration with CD Projekt Vancouver and Yigsoft LLC
+
+No root specified, using default root path.
+Core: App instance InitializeCore in 0.00 ms
+Continuing without global backend resource depot.
+Core: App instance InitializeResources in 0.00 ms
+Invalid root path found: E:\! This might cause errors while running commands.
+
+
+Copyright (c) 2022-23 CD Projekt Red. All Rights Reserved.
+Created in collaboration with CD Projekt Vancouver and Yigsoft LLC
+
+Core: App instance InitializeCore in 0.00 ms
+Continuing without global backend resource depot.
+Core: App instance InitializeResources in 0.00 ms
+
+No module supplied, please verify the parameters!
+
+
+USAGE
+
+	redMod.exe module [opional params]
+
+Avaliable modules:
+
+	resource-export	- Export resources from engine
+
+	resource-import	- Import resources to the engine
+
+	animation-import	- imports a raw animation resource to an animset file.
+
+	util-hash	- Hashes paths/string with given hash algorithm
+
+	deploy	- Deploys mods to the game by compiling them together.
+
+	help	- Displays help info about the other avaliable modules (use -h or -help on any command)
+
+PARAMETERS
+
+	- root	- Specify the root of the game's directory (most modules require this)
+
+Copyright (c) 2022-23 CD Projekt Red. All Rights Reserved.
+Created in collaboration with CD Projekt Vancouver and Yigsoft LLC
+
+App: Using custom game root path: 'D:\Program Files (x86)\Steam\steamapps\common\Cyberpunk 2077\archive\pc\content\'
+Core: App instance InitializeCore in 0.00 ms
+Core: App instance InitializeResources in 0.00 ms
+
+
+Unable to load file 'base\characters\common\player_base_bodies\player_man_average\t0_000_pma_base__full.mesh' from depot
+
+Commandlet resource-export has failed.
+Copyright (c) 2022-23 CD Projekt Red. All Rights Reserved.
+Created in collaboration with CD Projekt Vancouver and Yigsoft LLC
+
+No root specified, using default root path.
+Core: App instance InitializeCore in 0.00 ms
+Continuing without global backend resource depot.
+Core: App instance InitializeResources in 0.00 ms
+Invalid root path found: E:\! This might cause errors while running commands.
+
+
