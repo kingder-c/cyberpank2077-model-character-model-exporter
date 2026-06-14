@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { existsSync, statSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { promises as fsp } from "node:fs";
 import path from "node:path";
 
@@ -93,9 +94,201 @@ export type SaveAnalysis = {
 };
 
 const saveRegistry = new Map<string, SaveSummary>();
+type CyberCatItem = {
+  name?: string;
+  gameName?: string;
+  nodeName?: string;
+  dataType?: string;
+  quantity?: number;
+  rootName?: string;
+  slotName?: string;
+};
+
+type CyberCatAppearanceEntry = {
+  first?: string;
+  second?: string;
+  hashHex?: string;
+};
+
+type CyberCatAppearanceSection = {
+  name?: string;
+  mainList?: CyberCatAppearanceEntry[];
+  additionalList?: CyberCatAppearanceEntry[];
+};
+
+type CyberCatInspection = {
+  inspector?: {
+    ok?: boolean;
+    error?: string;
+    namesPath?: string;
+    resolverReady?: boolean;
+  };
+  save?: {
+    parsedItemCount?: number;
+    parsedAppearanceCount?: number;
+  };
+  appearance?: {
+    firstSection?: { appearanceSections?: CyberCatAppearanceSection[] };
+    secondSection?: { appearanceSections?: CyberCatAppearanceSection[] };
+    thirdSection?: { appearanceSections?: CyberCatAppearanceSection[] };
+    strings?: string[];
+    stringTriples?: Array<{ first?: string; second?: string; third?: string }>;
+  };
+  items?: CyberCatItem[];
+  likelyPlayerItems?: CyberCatItem[];
+  rawLikelyPlayerItems?: Array<{ name?: string; category?: string; nodeName?: string; count?: number }>;
+};
+
+type CyberCatResult = {
+  data: CyberCatInspection | null;
+  warnings: string[];
+};
+
+const cyberCatCache = new Map<string, Promise<CyberCatResult>>();
 
 export const getDefaultSaveDir = () =>
   path.join(process.env["USERPROFILE"] || "", "Saved Games", "CD Projekt Red", "Cyberpunk 2077");
+
+function workspaceRoot() {
+  return process.cwd();
+}
+
+function localResourceRoot() {
+  return path.resolve(workspaceRoot(), "..", "resource");
+}
+
+function findFileUnder(root: string, fileName: string, maxDepth = 10): string | null {
+  if (!existsSync(root)) {
+    return null;
+  }
+
+  const stack: Array<{ dir: string; depth: number }> = [{ dir: root, depth: 0 }];
+  while (stack.length) {
+    const current = stack.pop()!;
+    let entries;
+    try {
+      entries = statSync(current.dir).isDirectory() ? readdirSync(current.dir, { withFileTypes: true }) : [];
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      const fullPath = path.join(current.dir, entry.name);
+      if (entry.isFile() && entry.name.toLowerCase() === fileName.toLowerCase()) {
+        return fullPath;
+      }
+      if (entry.isDirectory() && current.depth < maxDepth) {
+        stack.push({ dir: fullPath, depth: current.depth + 1 });
+      }
+    }
+  }
+
+  return null;
+}
+
+function findCyberCatInspectorDll() {
+  const resourceRoot = localResourceRoot();
+  const expected = path.join(resourceRoot, "Cp2077SaveInspector", "bin", "Release", "net8.0", "Cp2077SaveInspector.dll");
+  return process.env["CP2077_SAVE_INSPECTOR_DLL"] || (existsSync(expected) ? expected : findFileUnder(resourceRoot, "Cp2077SaveInspector.dll"));
+}
+
+function findCyberCatNamesJson() {
+  const resourceRoot = localResourceRoot();
+  return (
+    process.env["CYBERCAT_NAMES_JSON"] ||
+    path.join(resourceRoot, "CyberCAT", "CyberCAT.Forms", "Names.json") ||
+    findFileUnder(resourceRoot, "Names.json")
+  );
+}
+
+function runDotnetJson(args: string[], timeoutMs = 120_000): Promise<{ stdout: string; stderr: string; code: number | null }> {
+  return new Promise((resolve, reject) => {
+    const dotnet = process.env["DOTNET_EXE"] || "dotnet";
+    const child = spawn(dotnet, args, {
+      cwd: workspaceRoot(),
+      windowsHide: true,
+      env: {
+        ...process.env,
+        DOTNET_CLI_HOME: process.env["DOTNET_CLI_HOME"] || path.resolve(workspaceRoot(), "..", ".dotnet"),
+        DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1",
+        DOTNET_CLI_TELEMETRY_OPTOUT: "1",
+      },
+    });
+
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error("CyberCAT inspector 执行超时。"));
+    }, timeoutMs);
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({ stdout, stderr, code });
+    });
+  });
+}
+
+async function inspectSaveWithCyberCat(save: SaveSummary): Promise<CyberCatResult> {
+  const cacheKey = `${save.savPath}:${save.size}:${save.modifiedAt}`;
+  if (cyberCatCache.has(cacheKey)) {
+    return cyberCatCache.get(cacheKey)!;
+  }
+
+  const task = (async (): Promise<CyberCatResult> => {
+    const warnings: string[] = [];
+    const inspectorDll = findCyberCatInspectorDll();
+    if (!inspectorDll || !existsSync(inspectorDll)) {
+      return {
+        data: null,
+        warnings: ["未找到 Cp2077SaveInspector.dll，暂时只能使用基础存档扫描结果。"],
+      };
+    }
+
+    const namesJson = findCyberCatNamesJson();
+    const args = namesJson && existsSync(namesJson) ? [inspectorDll, save.savPath, namesJson] : [inspectorDll, save.savPath];
+    if (!namesJson || !existsSync(namesJson)) {
+      warnings.push("未找到 CyberCAT Names.json，装备 TweakDB ID 只能显示为哈希。");
+    }
+
+    try {
+      const result = await runDotnetJson(args);
+      const output = result.stdout.trim().replace(/^\uFEFF/, "");
+      const jsonStart = output.indexOf("{");
+      if (jsonStart < 0) {
+        warnings.push(`CyberCAT inspector 没有返回 JSON：${result.stderr || "无 stderr"}`);
+        return { data: null, warnings };
+      }
+      const data = JSON.parse(output.slice(jsonStart)) as CyberCatInspection;
+      if (data.inspector?.ok === false) {
+        warnings.push(`CyberCAT inspector 解析失败：${data.inspector.error || "未知错误"}`);
+      }
+      if (result.code && result.code !== 0 && !data.inspector?.error) {
+        warnings.push(`CyberCAT inspector 退出码 ${result.code}：${result.stderr || "无 stderr"}`);
+      }
+      return { data, warnings };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        data: null,
+        warnings: [`CyberCAT inspector 执行失败：${message}`],
+      };
+    }
+  })();
+
+  cyberCatCache.set(cacheKey, task);
+  return task;
+}
 
 function createId(value: string): string {
   return createHash("sha1").update(value).digest("hex").slice(0, 16);
@@ -554,11 +747,112 @@ function buildResourcePaths(variant: VAppearancePreset["bodyVariant"]) {
   };
 }
 
+function allAppearanceSections(cybercat: CyberCatInspection | null): CyberCatAppearanceSection[] {
+  const appearance = cybercat?.appearance;
+  if (!appearance) {
+    return [];
+  }
+  return [
+    ...(appearance.firstSection?.appearanceSections || []),
+    ...(appearance.secondSection?.appearanceSections || []),
+    ...(appearance.thirdSection?.appearanceSections || []),
+  ];
+}
+
+function allAppearanceEntries(cybercat: CyberCatInspection | null): Array<CyberCatAppearanceEntry & { section: string }> {
+  const entries: Array<CyberCatAppearanceEntry & { section: string }> = [];
+  for (const section of allAppearanceSections(cybercat)) {
+    for (const item of section.mainList || []) {
+      entries.push({ ...item, section: section.name || "" });
+    }
+    for (const item of section.additionalList || []) {
+      entries.push({ ...item, section: section.name || "" });
+    }
+  }
+  return entries;
+}
+
+function findAppearanceValue(cybercat: CyberCatInspection | null, patterns: RegExp[]) {
+  const entry = allAppearanceEntries(cybercat).find((item) => {
+    const text = `${item.first || ""} ${item.second || ""} ${item.section || ""}`;
+    return patterns.some((pattern) => pattern.test(text));
+  });
+  return entry ? [entry.first, entry.second].filter(Boolean).join(" / ") : "";
+}
+
+function enrichResourcePathsFromCyberCat(
+  paths: VAppearancePreset["resourcePaths"],
+  variant: VAppearancePreset["bodyVariant"],
+  cybercat: CyberCatInspection | null,
+) {
+  const next: VAppearancePreset["resourcePaths"] = {
+    ...paths,
+    hairMeshes: [...paths.hairMeshes],
+    eyeMeshes: [...paths.eyeMeshes],
+    cyberwareMeshes: [...paths.cyberwareMeshes],
+  };
+
+  if (variant === "pma") {
+    next.eyeMeshes.push(
+      "base\\characters\\head\\player_base_heads\\player_man_average\\h0_000_pma_c__basehead\\he_000_pma_c__basehead.mesh",
+    );
+  }
+  if (variant === "pwa") {
+    next.eyeMeshes.push(
+      "base\\characters\\head\\player_base_heads\\player_female_average\\h0_000_pwa_c__basehead\\he_000_pwa_c__basehead.mesh",
+    );
+  }
+
+  const appearanceStrings = cybercat?.appearance?.strings || [];
+  const hairHint = `${findAppearanceValue(cybercat, [/hair/i])} ${appearanceStrings.join(" ")}`;
+  if (/short/i.test(hairHint) && variant === "pma") {
+    next.hairMeshes.push("base\\characters\\common\\hair\\hh_045_ma__short_spiked\\hh_045_ma__short_spiked.mesh");
+  }
+  if (/short/i.test(hairHint) && variant === "pwa") {
+    next.hairMeshes.push("base\\characters\\common\\hair\\hh_040_wa__pixie_bob\\hh_040_wa__pixie_bob.mesh");
+  }
+
+  next.hairMeshes = distinctLimited(next.hairMeshes, 6);
+  next.eyeMeshes = distinctLimited(next.eyeMeshes, 4);
+  next.cyberwareMeshes = distinctLimited(next.cyberwareMeshes, 8);
+  return next;
+}
+
+function cyberCatAppearanceFields(cybercat: CyberCatInspection | null): VAppearancePreset["parsedFields"] {
+  if (!cybercat?.appearance) {
+    return [];
+  }
+
+  const fields: VAppearancePreset["parsedFields"] = [];
+  const add = (key: string, label: string, value: string) => {
+    if (value && value !== " / ") {
+      fields.push({ key, label, value });
+    }
+  };
+
+  add("skin", "肤色/皮肤材质", findAppearanceValue(cybercat, [/skin_type|body_color/i]));
+  add("eyes", "眼睛颜色", findAppearanceValue(cybercat, [/eyes_color/i]));
+  add("hair", "发色/发型线索", findAppearanceValue(cybercat, [/hair_color|hairs/i]) || (cybercat.appearance.strings || []).join(", "));
+  add("cyberware", "面部义体", findAppearanceValue(cybercat, [/cyberware/i]));
+  add("tattoo", "纹身", findAppearanceValue(cybercat, [/tattoo/i]));
+  add("piercing", "穿孔/饰品", findAppearanceValue(cybercat, [/piercing|earring/i]));
+  add("makeup", "妆容", findAppearanceValue(cybercat, [/makeup/i]));
+  add("teeth", "牙齿", findAppearanceValue(cybercat, [/teeth/i]));
+
+  for (const part of ["eyes", "nose", "mouth", "jaw", "ear"]) {
+    add(`morph-${part}`, `五官形变 ${part}`, findAppearanceValue(cybercat, [new RegExp(`\\b${part}\\b`, "i")]));
+  }
+
+  return fields;
+}
+
 function createAppearancePreset(
   save: SaveSummary,
   header: SaveHeader | null,
   appearanceNode: SaveNode | null,
   decompressed: Buffer | null,
+  cybercat: CyberCatInspection | null,
+  cybercatWarnings: string[],
 ): VAppearancePreset {
   const variant = bodyVariant(save.meta.bodyGender);
   const warnings: string[] = [];
@@ -570,6 +864,10 @@ function createAppearancePreset(
   }
   if (variant === "unknown") {
     warnings.push("metadata 中没有可识别的身体性别，无法确定 pma/pwa 基础模型。");
+  }
+  warnings.push(...cybercatWarnings);
+  if (cybercat?.inspector?.ok && cybercat.save?.parsedAppearanceCount) {
+    warnings.push("已使用 CyberCAT 解析捏脸/外观节点，构建时会尽量应用肤色、眼睛、发色、义体和五官线索。");
   }
 
   const rawAppearanceBytes =
@@ -591,8 +889,9 @@ function createAppearancePreset(
       { key: "bodyGender", label: "身体模型", value: variant === "pwa" ? "女性 V / pwa" : variant === "pma" ? "男性 V / pma" : "未知" },
       { key: "brainGender", label: "声音/脑性别", value: asString(save.meta.brainGender) },
       { key: "appearanceBlobBytes", label: "外观数据块", value: rawAppearanceBytes },
+      ...cyberCatAppearanceFields(cybercat),
     ],
-    resourcePaths: buildResourcePaths(variant),
+    resourcePaths: enrichResourcePathsFromCyberCat(buildResourcePaths(variant), variant, cybercat),
     warnings,
   };
 }
@@ -677,12 +976,111 @@ function createSlot(slot: string, label: string, strings: string[], patterns: Re
   };
 }
 
-function createLoadoutPreset(saveId: string, raw: Buffer, decompressed: Buffer | null, nodes: SaveNode[]): VLoadoutPreset {
+function cleanItemName(value: unknown) {
+  return typeof value === "string" && value.startsWith("Items.") && !value.startsWith("Unknown_") ? value : "";
+}
+
+function isClothingItemName(name: string) {
+  return /Helmet|Hat|Cap|Mask|Glasses|Visor|Jacket|Coat|Vest|Shirt|TShirt|Top|Bra|Pants|Shorts|Skirt|Boots|Shoes|Dress|Outfit|Spacesuit|Underwear/i.test(
+    name,
+  );
+}
+
+function isWeaponItemName(name: string) {
+  return /Weapon|Preset_|Katana|Knife|Blade|Bat|Hammer|Pistol|Revolver|Rifle|Shotgun|SMG|Sniper|Launcher|Machete|Melee/i.test(
+    name,
+  );
+}
+
+function clothingSlotForItem(name: string) {
+  if (/Outfit|Spacesuit|Dress/i.test(name)) {
+    return "Outfit";
+  }
+  if (/Helmet|Hat|Cap/i.test(name)) {
+    return "Head";
+  }
+  if (/Mask|Glasses|Visor/i.test(name)) {
+    return "Face";
+  }
+  if (/Jacket|Coat|Vest/i.test(name)) {
+    return "OuterChest";
+  }
+  if (/Shirt|TShirt|Top|Bra/i.test(name)) {
+    return "InnerChest";
+  }
+  if (/Pants|Shorts|Skirt/i.test(name)) {
+    return "Legs";
+  }
+  if (/Boots|Shoes/i.test(name)) {
+    return "Feet";
+  }
+  return "";
+}
+
+function weaponSlotForItem(name: string) {
+  if (/Katana|Knife|Blade|Bat|Hammer|Machete|Melee/i.test(name)) {
+    return "Melee";
+  }
+  if (/Pistol|Revolver|Handgun/i.test(name)) {
+    return "Sidearm";
+  }
+  if (/Rifle|Shotgun|SMG|Sniper|Launcher|Weapon|Preset_/i.test(name)) {
+    return "PrimaryWeapon";
+  }
+  return "QuickSlot";
+}
+
+function mergeCyberCatItemsIntoSlots(
+  slots: LoadoutSlot[],
+  items: CyberCatItem[],
+  classifySlot: (name: string) => string,
+  filter: (name: string) => boolean,
+) {
+  const bySlot = new Map(slots.map((slot) => [slot.slot, slot]));
+  for (const item of items) {
+    const name = cleanItemName(item.name);
+    if (!name || !filter(name)) {
+      continue;
+    }
+    const slotId = classifySlot(name);
+    const slot = bySlot.get(slotId);
+    if (!slot) {
+      continue;
+    }
+    slot.detected = true;
+    slot.rawHints = distinctLimited([...slot.rawHints, name], 24);
+  }
+}
+
+function buildCyberCatItemPool(cybercat: CyberCatInspection | null) {
+  const items = [...(cybercat?.likelyPlayerItems || []), ...(cybercat?.items || [])];
+  const seen = new Set<string>();
+  const result: CyberCatItem[] = [];
+  for (const item of items) {
+    const key = `${item.name || ""}|${item.nodeName || ""}|${item.rootName || ""}|${item.slotName || ""}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(item);
+  }
+  return result;
+}
+
+function createLoadoutPreset(
+  saveId: string,
+  raw: Buffer,
+  decompressed: Buffer | null,
+  nodes: SaveNode[],
+  cybercat: CyberCatInspection | null,
+  cybercatWarnings: string[],
+): VLoadoutPreset {
   const strings = extractAsciiStrings([decompressed, raw]).filter((value) =>
     /Items\.|Attachment|Weapon|Cloth|Head|Face|Chest|Leg|Feet|Outfit|Armor|Slot|Cyberware|Equip|Inventory/i.test(value),
   );
   const candidates = resourceCandidates(strings);
   const items = itemCandidates(strings);
+  const cybercatItemPool = buildCyberCatItemPool(cybercat);
 
   const clothingSlots = [
     createSlot("Head", "头部", strings, [/HeadArmor/i, /\bHead\b/i, /Helmet|Hat|Cap/i], candidates),
@@ -706,14 +1104,21 @@ function createLoadoutPreset(saveId: string, raw: Buffer, decompressed: Buffer |
     createSlot("Muzzle", "枪口", strings, [/Muzzle|Silencer|Suppressor|Brake/i], candidates),
     createSlot("Mod", "武器插件", strings, [/WeaponMod|ModSlot|Attachment/i], candidates),
   ];
+  mergeCyberCatItemsIntoSlots(clothingSlots, cybercatItemPool, clothingSlotForItem, isClothingItemName);
+  mergeCyberCatItemsIntoSlots(weaponSlots, cybercatItemPool, weaponSlotForItem, isWeaponItemName);
 
   const nodeHints = nodes
     .map((node) => node.name)
     .filter((name) => /inventory|equipment|loadout|item|weapon|clothing/i.test(name));
-  const unresolvedItems = distinctLimited([...items, ...nodeHints], 150);
+  const cybercatNames = cybercatItemPool.map((item) => cleanItemName(item.name)).filter(Boolean);
+  const unresolvedItems = distinctLimited([...cybercatNames, ...items, ...nodeHints], 220);
   const warnings = [
-    "当前版本已做存档装备槽字符串识别；CP2077 的物品 ID 到实体/外观/mesh 的完整映射仍是实验功能。",
+    "当前版本已接入 CyberCAT itemData 解析；装备名会用于后续资源搜索，但部分槽位哈希在 Names.json 中仍可能无法命名。",
+    ...cybercatWarnings,
   ];
+  if (cybercat?.save?.parsedItemCount) {
+    warnings.push(`CyberCAT 已解析 ${cybercat.save.parsedItemCount} 个 itemData 节点。`);
+  }
   if (!clothingSlots.some((slot) => slot.detected) && !weaponSlots.some((slot) => slot.detected)) {
     warnings.push("没有从该存档中识别到明确的穿戴或武器槽，可能需要补充此存档版本的节点解析规则。");
   }
@@ -740,12 +1145,20 @@ export async function analyzeSave(id: string): Promise<SaveAnalysis | null> {
   const footerData = parseFooterWithFallback(buffer);
   const decompressed = decompressSaveData(buffer);
   const nodes = attachNodeIds(footerData?.nodes || [], decompressed);
+  const cybercat = await inspectSaveWithCyberCat(save);
   const relevantNodes = nodes.filter((node) =>
     /appear|custom|player|gender|body|skin|hair|inventory|equipment|loadout|weapon|clothing|item/i.test(node.name),
   );
   const appearanceNodes = nodes.filter((node) => /charac.*custom.*appear|appearance/i.test(node.name));
-  const appearance = createAppearancePreset(save, header, appearanceNodes[0] || null, decompressed);
-  const loadout = createLoadoutPreset(save.id, buffer, decompressed, nodes);
+  const appearance = createAppearancePreset(
+    save,
+    header,
+    appearanceNodes[0] || null,
+    decompressed,
+    cybercat.data,
+    cybercat.warnings,
+  );
+  const loadout = createLoadoutPreset(save.id, buffer, decompressed, nodes, cybercat.data, cybercat.warnings);
   const hasAppearanceBlob = Boolean(appearance.appearanceNode);
 
   return {

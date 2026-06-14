@@ -112,6 +112,10 @@ function safePart(value: string) {
   return value.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
+function distinctLimited(values: string[], limit: number) {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))].slice(0, limit);
+}
+
 export function getSaveModelCacheDir(saveId: string) {
   return path.join(getModelCacheRoot(), safePart(saveId));
 }
@@ -375,6 +379,49 @@ function runProcess(exe: string, args: string[], cwd: string, onLog: (line: stri
   });
 }
 
+function captureProcess(exe: string, args: string[], cwd: string, onLog: (line: string) => void, timeoutMs = 120_000) {
+  return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+    const child = spawn(exe, args, { cwd, windowsHide: true });
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error(`${path.basename(exe)} 执行超时`));
+    }, timeoutMs);
+
+    child.stdout.on("data", (chunk) => {
+      const text = String(chunk);
+      stdout += text;
+      text
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line && !/^\d+%$/.test(line))
+        .forEach(onLog);
+    });
+    child.stderr.on("data", (chunk) => {
+      const text = String(chunk);
+      stderr += text;
+      text
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .forEach(onLog);
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) {
+        resolve({ stdout, stderr });
+      } else {
+        reject(new Error(`${path.basename(exe)} 退出码 ${code}`));
+      }
+    });
+  });
+}
+
 function glbPathForResource(exportDir: string, resourcePath: string) {
   const normalized = resourcePath.replace(/\\/g, "/").replace(/\.mesh$/i, ".glb");
   return path.join(exportDir, ...normalized.split("/"));
@@ -413,7 +460,7 @@ async function uncookMeshResource(
   exportDir: string,
   onLog: (line: string) => void,
 ) {
-  const archivePath = path.join(gameDir, "archive", "pc", "content", "basegame_4_appearance.archive");
+  const archivePath = path.join(gameDir, "archive", "pc", "content");
   const args = [
     "uncook",
     archivePath,
@@ -445,6 +492,160 @@ async function uncookMeshResource(
   }
 
   throw new Error(`WolvenKit 没有生成 ${resourceFileName(resourcePath)}。`);
+}
+
+const archiveSearchCache = new Map<string, Promise<string[]>>();
+
+function itemNameTokens(name: string) {
+  return name
+    .replace(/^Items\./i, "")
+    .replace(/^Preset_/i, "")
+    .split(/[^A-Za-z0-9]+/)
+    .map((part) => part.trim().toLowerCase())
+    .filter(Boolean)
+    .filter((part) => !/^(q|sq|mq|ep|dlc)\d+$/i.test(part))
+    .filter((part) => !/^(items?|basic|rich|old|common|rare|epic|legendary)$/i.test(part));
+}
+
+function meshSearchPatternsForItem(name: string) {
+  const tokens = itemNameTokens(name);
+  const patterns: string[] = [];
+  if (tokens.length >= 2) {
+    patterns.push(`*${tokens.join("*")}*.mesh`);
+  }
+  const garmentWord = tokens.find((token) =>
+    /jacket|coat|vest|shirt|tshirt|pants|shorts|boots|shoes|glasses|mask|helmet|hat|outfit|spacesuit|samurai|katana|knife|pistol|revolver|rifle|shotgun|smg|sniper/.test(
+      token,
+    ),
+  );
+  if (garmentWord) {
+    const descriptive = tokens.filter((token) => token !== garmentWord && !/^\d+$/.test(token));
+    if (descriptive.length) {
+      patterns.push(`*${garmentWord}*${descriptive.join("*")}*.mesh`);
+      patterns.push(`*${descriptive.join("*")}*${garmentWord}*.mesh`);
+    }
+    patterns.push(`*${garmentWord}*.mesh`);
+  }
+  return distinctLimited(patterns, 5);
+}
+
+function scoreResourcePath(resourcePath: string, itemName: string, variant: VAppearancePreset["bodyVariant"]) {
+  const lower = resourcePath.toLowerCase();
+  const tokens = itemNameTokens(itemName);
+  let score = 0;
+  for (const token of tokens) {
+    if (lower.includes(token)) {
+      score += token.length > 2 ? 4 : 1;
+    }
+  }
+  if (variant === "pma" && /[_\\](ma|mm|mb|m)_/i.test(resourcePath)) {
+    score += /_ma_/i.test(resourcePath) ? 8 : 4;
+  }
+  if (variant === "pwa" && /[_\\](wa|wf|wb|w)_/i.test(resourcePath)) {
+    score += /_wa_/i.test(resourcePath) ? 8 : 4;
+  }
+  if (/shadow|proxy|lod|fpp/i.test(resourcePath)) {
+    score -= 6;
+  }
+  return score;
+}
+
+async function searchArchiveMeshesForItem(
+  wolvenKitExe: string,
+  gameDir: string,
+  itemName: string,
+  variant: VAppearancePreset["bodyVariant"],
+  onLog: (line: string) => void,
+) {
+  const archiveDir = path.join(gameDir, "archive", "pc", "content");
+  const patterns = meshSearchPatternsForItem(itemName);
+  const found = new Set<string>();
+  for (const pattern of patterns) {
+    const cacheKey = `${archiveDir}|${pattern}`;
+    if (!archiveSearchCache.has(cacheKey)) {
+      archiveSearchCache.set(
+        cacheKey,
+        captureProcess(
+          wolvenKitExe,
+          ["archive", archiveDir, "--list", "--pattern", pattern, "--verbosity", "Minimal"],
+          workspaceRoot(),
+          () => undefined,
+        ).then((result) =>
+          result.stdout
+            .split(/\r?\n|\r/)
+            .map((line) => line.trim())
+            .filter((line) => /\.mesh$/i.test(line)),
+        ),
+      );
+    }
+    const matches = await archiveSearchCache.get(cacheKey)!;
+    matches.forEach((match) => found.add(match));
+    if (found.size) {
+      break;
+    }
+  }
+
+  const ranked = [...found]
+    .map((resourcePath) => ({ resourcePath, score: scoreResourcePath(resourcePath, itemName, variant) }))
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .map((item) => item.resourcePath);
+
+  if (ranked.length) {
+    onLog(`已为 ${itemName} 找到候选 mesh：${ranked[0]}`);
+  } else {
+    onLog(`未能为 ${itemName} 找到可导出的 mesh。`);
+  }
+  return ranked.slice(0, 1);
+}
+
+async function resolveLoadoutResources(
+  role: "clothing" | "weapon",
+  slots: LoadoutSlot[],
+  job: ModelBuildJob,
+  appearance: VAppearancePreset,
+  tools: ToolStatus,
+) {
+  const explicit = slots.flatMap((slot) => slot.resolvedResourcePaths);
+  const discovered: string[] = [];
+  if (!tools.wolvenKit.path) {
+    return explicit;
+  }
+
+  const slotOrder =
+    role === "clothing"
+      ? ["OuterChest", "InnerChest", "Legs", "Feet", "Face", "Head", "Outfit"]
+      : ["PrimaryWeapon", "Sidearm", "Melee", "QuickSlot"];
+  const names: string[] = [];
+  for (const slotId of slotOrder) {
+    const slot = slots.find((item) => item.slot === slotId);
+    if (!slot) {
+      continue;
+    }
+    const slotNames = slot.rawHints.filter((hint) => /^Items\./i.test(hint));
+    if (role === "clothing" && slotId !== "Outfit") {
+      names.push(...slotNames.filter((name) => !/Outfit|Spacesuit/i.test(name)).slice(0, 1));
+    } else {
+      names.push(...slotNames.slice(0, 1));
+    }
+  }
+  for (const name of names) {
+    const matches = await searchArchiveMeshesForItem(
+      tools.wolvenKit.path,
+      job.gameDir,
+      name,
+      appearance.bodyVariant,
+      (line) => pushLog(job, line),
+    );
+    const usable =
+      role === "clothing" ? matches.filter((resourcePath) => /\\characters\\garment\\/i.test(resourcePath)) : matches;
+    if (role === "clothing" && matches.length && !usable.length) {
+      pushLog(job, `${name} 的候选资源不是角色服装 mesh，已跳过。`);
+    }
+    discovered.push(...usable);
+  }
+
+  return distinctLimited([...explicit, ...discovered], role === "clothing" ? 7 : 4);
 }
 
 async function writeBlenderAssemblyScript(saveId: string, appearance: VAppearancePreset, sourceGlbs: string[]) {
@@ -536,10 +737,27 @@ async function writeEnhancedBlenderAssemblyScript(
     2,
   );
   const options = JSON.stringify(renderOptions, null, 2);
-  const skinColor = appearance.bodyVariant === "pwa" ? [0.78, 0.52, 0.39, 1] : [0.68, 0.42, 0.29, 1];
+  const traitText = appearance.parsedFields.map((field) => `${field.key}:${field.value}`).join(" ").toLowerCase();
+  const skinColor = /limestone/.test(traitText)
+    ? [0.72, 0.52, 0.40, 1]
+    : appearance.bodyVariant === "pwa"
+      ? [0.78, 0.52, 0.39, 1]
+      : [0.68, 0.42, 0.29, 1];
+  const hairColor = /teal/.test(traitText)
+    ? [0.02, 0.42, 0.46, 1]
+    : /brown/.test(traitText)
+      ? [0.18, 0.10, 0.055, 1]
+      : [0.045, 0.038, 0.035, 1];
+  const eyeColor = /green/.test(traitText)
+    ? [0.22, 0.75, 0.36, 1]
+    : /brown/.test(traitText)
+      ? [0.36, 0.20, 0.10, 1]
+      : [0.18, 0.72, 0.95, 1];
   const inputsLiteral = JSON.stringify(inputs);
   const optionsLiteral = JSON.stringify(options);
   const skinColorLiteral = JSON.stringify(JSON.stringify(skinColor));
+  const hairColorLiteral = JSON.stringify(JSON.stringify(hairColor));
+  const eyeColorLiteral = JSON.stringify(JSON.stringify(eyeColor));
   const script = `import bpy
 import os
 import json
@@ -553,6 +771,8 @@ bpy.ops.object.delete()
 INPUTS = json.loads(${inputsLiteral})
 OPTIONS = json.loads(${optionsLiteral})
 SKIN_COLOR = json.loads(${skinColorLiteral})
+HAIR_COLOR = json.loads(${hairColorLiteral})
+EYE_COLOR = json.loads(${eyeColorLiteral})
 
 def make_material(name, color, roughness=0.62, metallic=0.0):
     mat = bpy.data.materials.new(name)
@@ -567,8 +787,8 @@ def make_material(name, color, roughness=0.62, metallic=0.0):
 
 MATERIALS = {
     "skin": make_material("V skin base", SKIN_COLOR, 0.68, 0.0),
-    "hair": make_material("V hair base", (0.045, 0.038, 0.035, 1.0), 0.72, 0.0),
-    "eyes": make_material("V eye base", (0.18, 0.72, 0.95, 1.0), 0.22, 0.0),
+    "hair": make_material("V hair base", HAIR_COLOR, 0.72, 0.0),
+    "eyes": make_material("V eye base", EYE_COLOR, 0.22, 0.0),
     "cyberware": make_material("V cyberware base", (0.46, 0.50, 0.55, 1.0), 0.36, 0.65),
     "clothing": make_material("Save clothing base", (0.055, 0.075, 0.105, 1.0), 0.82, 0.0),
     "weapon": make_material("Save weapon base", (0.36, 0.37, 0.38, 1.0), 0.42, 0.7),
@@ -864,11 +1084,13 @@ async function attemptEnhancedExternalBuild(
     await addMesh("cyberware", "义体外观", cyberwareMesh, false);
   }
 
-  const clothingResources = loadout.clothingSlots.flatMap((slot) => slot.resolvedResourcePaths);
-  const weaponResources = loadout.weaponSlots.flatMap((slot) => slot.resolvedResourcePaths);
+  let clothingResources: string[] = [];
+  let weaponResources: string[] = [];
   const attachmentResources = loadout.attachmentSlots.flatMap((slot) => slot.resolvedResourcePaths);
 
   if (renderOptions.includeSaveClothing || renderOptions.bodyMode === "save-outfit" || renderOptions.bodyMode === "clothing-only") {
+    setJob(job, { progress: 72, title: "搜索并导出存档服装" });
+    clothingResources = await resolveLoadoutResources("clothing", loadout.clothingSlots, job, appearance, tools);
     if (!clothingResources.length) {
       pushLog(job, "已启用存档服装，但当前只能识别槽位/物品线索，还没有解析到可直接导出的服装 mesh。");
     }
@@ -878,6 +1100,8 @@ async function attemptEnhancedExternalBuild(
   }
 
   if (renderOptions.includeSaveWeapons || renderOptions.bodyMode === "save-outfit" || renderOptions.bodyMode === "weapons-only") {
+    setJob(job, { progress: 76, title: "搜索并导出存档武器" });
+    weaponResources = await resolveLoadoutResources("weapon", loadout.weaponSlots, job, appearance, tools);
     if (!weaponResources.length) {
       pushLog(job, "已启用存档武器，但当前只能识别武器线索，还没有解析到可直接导出的武器 mesh。");
     }
