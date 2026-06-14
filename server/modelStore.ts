@@ -21,10 +21,12 @@ export type ModelArtifactStatus = {
   previewGlb: string | null;
   exportStl: string | null;
   export3mf: string | null;
+  exportVisual3mf: string | null;
   manifest: string | null;
   hasPreview: boolean;
   hasPrintable: boolean;
   has3mf: boolean;
+  hasVisual3mf: boolean;
 };
 
 export type BodyMode = "naked" | "save-outfit" | "clothing-only" | "weapons-only";
@@ -132,6 +134,7 @@ export function getArtifacts(saveId: string): ModelArtifactStatus {
   const preview = artifactPath(saveId, "preview.glb");
   const stl = artifactPath(saveId, "print.stl");
   const threeMf = artifactPath(saveId, "print.3mf");
+  const visualThreeMf = artifactPath(saveId, "print.visual.3mf");
   const manifest = artifactPath(saveId, "manifest.json");
   return {
     saveId,
@@ -139,10 +142,12 @@ export function getArtifacts(saveId: string): ModelArtifactStatus {
     previewGlb: existsSync(preview) ? preview : null,
     exportStl: existsSync(stl) ? stl : null,
     export3mf: existsSync(threeMf) ? threeMf : null,
+    exportVisual3mf: existsSync(visualThreeMf) ? visualThreeMf : null,
     manifest: existsSync(manifest) ? manifest : null,
     hasPreview: existsSync(preview),
     hasPrintable: existsSync(stl),
     has3mf: existsSync(threeMf),
+    hasVisual3mf: existsSync(visualThreeMf),
   };
 }
 
@@ -1119,6 +1124,7 @@ async function writeEnhancedBlenderAssemblyScript(
   const preview = artifactPath(saveId, "preview.glb").replace(/\\/g, "\\\\");
   const stl = artifactPath(saveId, "print.stl").replace(/\\/g, "\\\\");
   const threeMf = artifactPath(saveId, "print.3mf").replace(/\\/g, "\\\\");
+  const visualThreeMf = artifactPath(saveId, "print.visual.3mf").replace(/\\/g, "\\\\");
   const label = `${appearance.bodyVariant.toUpperCase()} ${appearance.bodyGender} V`;
   const inputs = JSON.stringify(
     sources.map((source) => ({
@@ -1154,6 +1160,7 @@ async function writeEnhancedBlenderAssemblyScript(
 import os
 import json
 import zipfile
+import bmesh
 from mathutils import Vector
 from xml.sax.saxutils import escape
 
@@ -1178,34 +1185,56 @@ def make_material(name, color, roughness=0.62, metallic=0.0):
     return mat
 
 MATERIALS = {
-    "skin": make_material("V skin base", SKIN_COLOR, 0.68, 0.0),
-    "hair": make_material("V hair base", HAIR_COLOR, 0.72, 0.0),
-    "eyes": make_material("V eye base", EYE_COLOR, 0.22, 0.0),
-    "cyberware": make_material("V cyberware base", (0.46, 0.50, 0.55, 1.0), 0.36, 0.65),
-    "clothing": make_material("Save clothing base", (0.055, 0.075, 0.105, 1.0), 0.82, 0.0),
-    "weapon": make_material("Save weapon base", (0.36, 0.37, 0.38, 1.0), 0.42, 0.7),
+    "skin": make_material("V skin warm base", SKIN_COLOR, 0.68, 0.0),
+    "hair": make_material("V hair near black", HAIR_COLOR, 0.72, 0.0),
+    "eyes": make_material("V eye blue emissive", EYE_COLOR, 0.22, 0.0),
+    "cyberware": make_material("Cyberware gunmetal", (0.50, 0.54, 0.58, 1.0), 0.34, 0.55),
+    "shirt": make_material("Q203 shirt charcoal", (0.13, 0.15, 0.18, 1.0), 0.80, 0.0),
+    "pants": make_material("Q203 pants dark graphite", (0.08, 0.085, 0.095, 1.0), 0.86, 0.0),
+    "shoes": make_material("Q203 shoes worn brown", (0.19, 0.145, 0.105, 1.0), 0.78, 0.0),
+    "glasses": make_material("Q203 glasses smoked metal", (0.035, 0.04, 0.05, 1.0), 0.32, 0.35),
+    "clothing": make_material("Save clothing neutral cloth", (0.18, 0.19, 0.21, 1.0), 0.82, 0.0),
+    "weapon": make_material("Weapon dark metal", (0.30, 0.31, 0.32, 1.0), 0.42, 0.7),
     "fallback": make_material("Neutral fallback", (0.62, 0.64, 0.66, 1.0), 0.7, 0.0),
 }
 
-ROLE_TO_MATERIAL = {
-    "body": "skin",
-    "head": "skin",
-    "arms": "skin",
-    "hair": "hair",
-    "eyes": "eyes",
-    "cyberware": "cyberware",
-    "clothing": "clothing",
-    "weapon": "weapon",
-}
+def material_key_for_source(source):
+    role = source.get("role", "fallback")
+    resource = source.get("resourcePath", "").lower().replace("/", "\\\\")
+    if role in ("body", "head", "arms"):
+        return "skin"
+    if role == "hair":
+        return "hair"
+    if role == "eyes":
+        return "eyes"
+    if role == "cyberware":
+        return "cyberware"
+    if role == "weapon":
+        if "strongarms" in resource:
+            return "cyberware"
+        return "weapon"
+    if role == "clothing":
+        if "\\\\torso\\\\" in resource or "tshirt" in resource or "tank" in resource or "shirt" in resource:
+            return "shirt"
+        if "\\\\legs\\\\" in resource or "pants" in resource or "shorts" in resource:
+            return "pants"
+        if "\\\\feet\\\\" in resource or "shoe" in resource or "boots" in resource:
+            return "shoes"
+        if "\\\\head\\\\" in resource or "glasses" in resource or "specs" in resource or "mask" in resource:
+            return "glasses"
+        return "clothing"
+    return "fallback"
 
-def material_for_role(role):
-    return MATERIALS.get(ROLE_TO_MATERIAL.get(role, "fallback"), MATERIALS["fallback"])
+def material_for_source(source):
+    return MATERIALS.get(material_key_for_source(source), MATERIALS["fallback"])
 
-def ensure_material(source, obj):
-    has_material = any(slot.material is not None for slot in obj.material_slots)
-    if has_material:
-        return
-    obj.data.materials.append(material_for_role(source["role"]))
+def assign_material(source, obj):
+    mat = material_for_source(source)
+    obj.data.materials.clear()
+    obj.data.materials.append(mat)
+    for poly in obj.data.polygons:
+        poly.material_index = 0
+    obj["cp2077_material_key"] = material_key_for_source(source)
 
 def import_source(source):
     path = source["glbPath"]
@@ -1220,7 +1249,7 @@ def import_source(source):
         obj.name = "${label} " + source["label"] + " " + obj.name
         obj["cp2077_role"] = source["role"]
         obj["cp2077_source"] = source["resourcePath"]
-        ensure_material(source, obj)
+        assign_material(source, obj)
         obj.select_set(True)
     return added
 
@@ -1263,22 +1292,127 @@ BASE_MATERIALS = [
     ("Skin", "#AD6B4AFF"),
     ("Hair", "#0B0909FF"),
     ("Eyes", "#2EB8F2FF"),
-    ("Cyberware", "#747F8CFF"),
-    ("Clothing", "#0E1320FF"),
-    ("Weapon", "#5C5F62FF"),
+    ("Cyberware", "#808A94FF"),
+    ("Shirt", "#22262EFF"),
+    ("Pants", "#151820FF"),
+    ("Shoes", "#30251BFF"),
+    ("Glasses", "#090B0EFF"),
+    ("Clothing", "#2E3035FF"),
+    ("Weapon", "#4D5052FF"),
     ("Fallback", "#9EA3A8FF"),
 ]
 
-ROLE_INDEX = {
-    "body": 0,
-    "head": 0,
-    "arms": 0,
+MATERIAL_INDEX = {
+    "skin": 0,
     "hair": 1,
     "eyes": 2,
     "cyberware": 3,
-    "clothing": 4,
-    "weapon": 5,
+    "shirt": 4,
+    "pants": 5,
+    "shoes": 6,
+    "glasses": 7,
+    "clothing": 8,
+    "weapon": 9,
+    "fallback": 10,
 }
+
+def material_index_for_object(obj):
+    return MATERIAL_INDEX.get(obj.get("cp2077_material_key", "fallback"), MATERIAL_INDEX["fallback"])
+
+def mesh_open_edge_count(mesh):
+    edge_counts = {}
+    for poly in mesh.polygons:
+        vertices = list(poly.vertices)
+        for i, start in enumerate(vertices):
+            end = vertices[(i + 1) % len(vertices)]
+            edge = tuple(sorted((int(start), int(end))))
+            edge_counts[edge] = edge_counts.get(edge, 0) + 1
+    return sum(1 for count in edge_counts.values() if count == 1)
+
+def mesh_nonmanifold_edge_count(mesh):
+    edge_counts = {}
+    for poly in mesh.polygons:
+        vertices = list(poly.vertices)
+        for i, start in enumerate(vertices):
+            end = vertices[(i + 1) % len(vertices)]
+            edge = tuple(sorted((int(start), int(end))))
+            edge_counts[edge] = edge_counts.get(edge, 0) + 1
+    return sum(1 for count in edge_counts.values() if count != 2)
+
+def object_mesh_copy(obj, name_suffix):
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    eval_obj = obj.evaluated_get(depsgraph)
+    mesh = bpy.data.meshes.new_from_object(eval_obj, depsgraph=depsgraph)
+    mesh.transform(obj.matrix_world)
+    mesh.update()
+    copy = bpy.data.objects.new(obj.name + name_suffix, mesh)
+    copy["cp2077_role"] = obj.get("cp2077_role", "fallback")
+    copy["cp2077_source"] = obj.get("cp2077_source", "")
+    copy["cp2077_material_key"] = obj.get("cp2077_material_key", "fallback")
+    bpy.context.collection.objects.link(copy)
+    return copy
+
+def repair_mesh_object(obj):
+    mesh = obj.data
+    before_open = mesh_open_edge_count(mesh)
+    before_nonmanifold = mesh_nonmanifold_edge_count(mesh)
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    bmesh.ops.delete(bm, geom=[v for v in bm.verts if not v.link_edges], context='VERTS')
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=0.00035)
+    degenerate_edges = [edge for edge in bm.edges if edge.calc_length() < 0.00001]
+    if degenerate_edges:
+        bmesh.ops.delete(bm, geom=degenerate_edges, context='EDGES')
+    boundary_edges = [edge for edge in bm.edges if edge.is_boundary]
+    if boundary_edges:
+        try:
+            bmesh.ops.holes_fill(bm, edges=boundary_edges, sides=0)
+        except Exception as error:
+            print("3MF hole fill warning", obj.name, error)
+    if bm.faces:
+        bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+        bmesh.ops.triangulate(bm, faces=bm.faces)
+    bm.to_mesh(mesh)
+    bm.free()
+    mesh.update()
+    after_open = mesh_open_edge_count(mesh)
+    after_nonmanifold = mesh_nonmanifold_edge_count(mesh)
+    print(
+        "3MF repair",
+        obj.name,
+        "open_edges",
+        before_open,
+        "->",
+        after_open,
+        "nonmanifold_edges",
+        before_nonmanifold,
+        "->",
+        after_nonmanifold,
+    )
+    return after_open, after_nonmanifold
+
+def make_print_objects(objects):
+    print_objects = []
+    for source in objects:
+        role = source.get("cp2077_role", "fallback")
+        material_key = source.get("cp2077_material_key", "fallback")
+        copy = object_mesh_copy(source, "_print")
+        print_objects.append(copy)
+        repair_mesh_object(copy)
+        if role in ("clothing", "weapon") or material_key in ("shoes", "pants", "cyberware"):
+            modifier = copy.modifiers.new("print shell thickness", "SOLIDIFY")
+            modifier.thickness = 0.0018
+            modifier.offset = 0.0
+            modifier.use_quality_normals = True
+            bpy.context.view_layer.objects.active = copy
+            copy.select_set(True)
+            try:
+                bpy.ops.object.modifier_apply(modifier=modifier.name)
+                repair_mesh_object(copy)
+            except Exception as error:
+                print("3MF solidify warning", copy.name, error)
+            copy.select_set(False)
+    return print_objects
 
 def export_3mf(filepath, objects):
     depsgraph = bpy.context.evaluated_depsgraph_get()
@@ -1300,9 +1434,8 @@ def export_3mf(filepath, objects):
             triangles = []
             for tri in mesh.loop_triangles:
                 v0, v1, v2 = tri.vertices
-                triangles.append(f'<triangle v1="{v0}" v2="{v1}" v3="{v2}"/>')
-            role = obj.get("cp2077_role", "fallback")
-            pindex = ROLE_INDEX.get(role, 6)
+                triangles.append(f'<triangle v1="{v0}" v2="{v1}" v3="{v2}" pid="1" pindex="{material_index_for_object(obj)}"/>')
+            pindex = material_index_for_object(obj)
             safe_name = escape(obj.name)
             object_xml.append(
                 f'<object id="{object_id}" type="model" name="{safe_name}" pid="1" pindex="{pindex}"><mesh><vertices>'
@@ -1353,7 +1486,15 @@ def export_3mf(filepath, objects):
         archive.writestr("3D/3dmodel.model", model_xml)
 
 if OPTIONS.get("export3mf", True):
-    export_3mf(r"${threeMf}", mesh_objects)
+    export_3mf(r"${visualThreeMf}", mesh_objects)
+    print_objects = make_print_objects(mesh_objects)
+    try:
+        export_3mf(r"${threeMf}", print_objects)
+    finally:
+        for obj in print_objects:
+            mesh = obj.data
+            bpy.data.objects.remove(obj, do_unlink=True)
+            bpy.data.meshes.remove(mesh, do_unlink=True)
 `;
   await fsp.writeFile(scriptPath, script, "utf8");
   return scriptPath;
@@ -1570,11 +1711,11 @@ async function attemptEnhancedExternalBuild(
   await runProcess(tools.blender.path, ["--background", "--python", scriptPath], cacheDir, (line) => pushLog(job, line));
 
   const artifacts = getArtifacts(job.saveId);
-  if (!artifacts.hasPreview || !artifacts.hasPrintable || (renderOptions.export3mf && !artifacts.has3mf)) {
-    throw new Error("Blender 已运行完成，但没有生成完整的 preview.glb、print.stl 或 print.3mf。");
+  if (!artifacts.hasPreview || !artifacts.hasPrintable || (renderOptions.export3mf && (!artifacts.has3mf || !artifacts.hasVisual3mf))) {
+    throw new Error("Blender 已运行完成，但没有生成完整的 preview.glb、print.stl、print.3mf 或 print.visual.3mf。");
   }
 
-  pushLog(job, "模型生成完成：preview.glb、print.stl、print.3mf 已写入缓存目录。");
+  pushLog(job, "模型生成完成：preview.glb、print.stl、print.3mf、print.visual.3mf 已写入缓存目录。");
   setJob(job, { progress: 96, title: "模型导出完成", artifacts });
 }
 
@@ -1588,7 +1729,8 @@ async function runBuild(job: ModelBuildJob, force: boolean, parallelism: number)
     }
 
     const artifacts = getArtifacts(job.saveId);
-    const cachedArtifactsReady = artifacts.hasPreview && artifacts.hasPrintable && (!renderOptions.export3mf || artifacts.has3mf);
+    const cachedArtifactsReady =
+      artifacts.hasPreview && artifacts.hasPrintable && (!renderOptions.export3mf || (artifacts.has3mf && artifacts.hasVisual3mf));
     if (!force && cachedArtifactsReady) {
       pushLog(job, "已存在缓存模型，直接复用。");
       setJob(job, { status: "done", progress: 100, title: "模型已缓存", artifacts });
@@ -1647,9 +1789,17 @@ export function startModelBuild(request: BuildRequest) {
   return job;
 }
 
-export function getArtifactFile(saveId: string, kind: "preview" | "stl" | "3mf" | "manifest") {
+export function getArtifactFile(saveId: string, kind: "preview" | "stl" | "3mf" | "visual3mf" | "manifest") {
   const fileName =
-    kind === "preview" ? "preview.glb" : kind === "stl" ? "print.stl" : kind === "3mf" ? "print.3mf" : "manifest.json";
+    kind === "preview"
+      ? "preview.glb"
+      : kind === "stl"
+        ? "print.stl"
+        : kind === "3mf"
+          ? "print.3mf"
+          : kind === "visual3mf"
+            ? "print.visual.3mf"
+            : "manifest.json";
   const filePath = artifactPath(saveId, fileName);
   return existsSync(filePath) ? filePath : null;
 }

@@ -129,7 +129,14 @@
                 :class="{ disabled: !summary?.artifacts?.has3mf }"
                 :href="summary?.artifacts?.has3mf ? `/api/model/${selectedSave.id}/export.3mf` : undefined"
               >
-                导出 3MF
+                导出 3MF（打印修复）
+              </a>
+              <a
+                class="secondary-button"
+                :class="{ disabled: !summary?.artifacts?.hasVisual3mf }"
+                :href="summary?.artifacts?.hasVisual3mf ? `/api/model/${selectedSave.id}/export.visual.3mf` : undefined"
+              >
+                导出 3MF（彩色预览）
               </a>
               <button class="secondary-button" @click="openCacheDir">打开缓存目录</button>
               <button class="secondary-button" type="button" @click="operationExpanded = !operationExpanded">
@@ -275,10 +282,12 @@ type ArtifactStatus = {
   previewGlb: string | null;
   exportStl: string | null;
   export3mf: string | null;
+  exportVisual3mf: string | null;
   manifest: string | null;
   hasPreview: boolean;
   hasPrintable: boolean;
   has3mf: boolean;
+  hasVisual3mf: boolean;
 };
 
 type SaveSummaryResponse = {
@@ -428,6 +437,9 @@ const buildLabel = computed(() => {
     return "生成失败";
   }
   if (summary.value?.artifacts?.hasPreview) {
+    if (summary.value.artifacts.has3mf && summary.value.artifacts.hasVisual3mf) {
+      return "已有可预览模型 / 支持双 3MF";
+    }
     return summary.value.artifacts.has3mf ? "已有可预览模型 / 支持 3MF" : "已有可预览模型";
   }
   return "等待生成";
