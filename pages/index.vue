@@ -1,23 +1,23 @@
-<template>
+﻿<template>
   <main class="app-shell">
     <aside class="sidebar">
       <header class="title-block">
         <p class="eyebrow">Cyberpunk 2077</p>
-        <h1>V 真实 3D 预览</h1>
+        <h1>V 鐪熷疄 3D 棰勮</h1>
       </header>
 
       <div class="field">
-        <label for="gameDir">游戏目录</label>
+        <label for="gameDir">娓告垙鐩綍</label>
         <input id="gameDir" v-model="gameDir" type="text" @change="refreshTools" />
       </div>
 
       <div class="field">
-        <label for="saveDir">存档目录</label>
+        <label for="saveDir">瀛樻。鐩綍</label>
         <input id="saveDir" v-model="saveDir" type="text" />
       </div>
 
       <button class="primary-button" :disabled="loadingSaves" @click="loadSaves">
-        {{ loadingSaves ? "正在扫描存档..." : "重新扫描存档" }}
+        {{ loadingSaves ? "姝ｅ湪鎵弿瀛樻。..." : "閲嶆柊鎵弿瀛樻。" }}
       </button>
 
       <p class="status">{{ status }}</p>
@@ -31,7 +31,7 @@
           @click="selectSave(save)"
         >
           <img v-if="save.screenshotPath" class="thumb" :src="`/api/save/${save.id}/screenshot`" alt="" />
-          <div v-else class="thumb empty">无图</div>
+          <div v-else class="thumb empty">鏃犲浘</div>
           <span class="save-name">{{ save.name }}</span>
           <span class="save-meta">{{ formatDate(save.modifiedAt) }}</span>
           <span class="save-meta">{{ metaLine(save) }}</span>
@@ -47,11 +47,11 @@
         </div>
         <div class="summary-chip" :class="buildTone">{{ buildLabel }}</div>
         <div class="summary-item">
-          <span>身体模型</span>
+          <span>身材类型</span>
           <strong>{{ summary?.bodyVariant?.toUpperCase() || "-" }}</strong>
         </div>
         <div class="summary-item">
-          <span>身体性别</span>
+          <span>身高性别</span>
           <strong>{{ genderLabel(summary?.bodyGender || selectedSave.meta.bodyGender) }}</strong>
         </div>
         <div class="summary-item">
@@ -60,173 +60,201 @@
         </div>
       </section>
 
-      <section v-if="selectedSave" class="viewer-panel">
-        <div class="viewer-toolbar">
-          <div>
-            <p class="eyebrow">3D 视口</p>
-            <h3>{{ viewerTitle }}</h3>
-          </div>
-          <div class="viewer-actions">
-            <button class="ghost-button" @click="resetCamera">重置视角</button>
-            <button class="ghost-button" :class="{ active: wireframe }" @click="toggleWireframe">
-              {{ wireframe ? "实体显示" : "线框显示" }}
-            </button>
-          </div>
-        </div>
+        <section class="main-workspace" v-if="selectedSave">
+          <section class="work-zone">
+            <section class="viewer-panel">
+              <div class="viewer-toolbar">
+                <div>
+                <p class="eyebrow">3D 预览</p>
+                <h3>{{ viewerTitle }}</h3>
+              </div>
+              <div class="viewer-actions">
+                <button class="ghost-button" @click="resetCamera">重置相机</button>
+                <button class="ghost-button" :class="{ active: wireframe }" @click="toggleWireframe">
+                  {{ wireframe ? "线框显示" : "光照显示" }}
+                </button>
+              </div>
+            </div>
 
-        <div ref="viewerEl" class="viewer">
-          <div v-if="viewerMessage" class="viewer-overlay">
-            <strong>{{ viewerMessage }}</strong>
-            <p>{{ viewerHint }}</p>
-          </div>
-        </div>
-      </section>
+            <div ref="viewerEl" class="viewer">
+                <div v-if="viewerMessage" class="viewer-overlay">
+                  <strong>{{ viewerMessage }}</strong>
+                  <p>{{ viewerHint }}</p>
+                </div>
+              </div>
+            </section>
+          </section>
 
-      <section v-if="selectedSave" class="action-panel">
-        <div class="control-strip">
-          <div class="mode-group">
-            <span class="control-label">模型模式</span>
-            <div class="mode-grid">
-              <button
-                v-for="mode in bodyModes"
-                :key="mode.value"
-                class="mode-button"
-                :class="{ active: renderOptions.bodyMode === mode.value }"
-                @click="applyMode(mode.value)"
+          <aside class="log-dock" v-if="selectedSave">
+          <div class="log-box">
+            <div class="log-title">
+              <strong>生成日志</strong>
+              <span>{{ jobProgress }}%</span>
+            </div>
+            <div class="log-progress-track">
+              <div class="log-progress-fill" :style="{ width: `${jobProgress}%` }"></div>
+            </div>
+              <div ref="logScrollRef" class="log-scroll">
+                <p v-if="!activeJob?.logs.length">
+                  等待生成任务，点击底部“生成/刷新模型”后会在此显示详细导出日志，并可打开缓存目录查看结果。
+                </p>
+                <p v-for="(line, index) in activeJob?.logs || []" :key="`${index}-${line}`">{{ line }}</p>
+              </div>
+            </div>
+          </aside>
+        </section>
+
+        <section v-if="selectedSave" class="operation-dock">
+          <section class="action-panel">
+            <div class="action-quick">
+              <button class="primary-button build-button" :disabled="!canBuild" @click="startBuild(true)">
+                {{ building ? "正在生成模型..." : "生成/刷新模型" }}
+              </button>
+              <a
+                class="secondary-button"
+                :class="{ disabled: !summary?.artifacts?.hasPreview }"
+                :href="summary?.artifacts?.hasPreview ? `/api/model/${selectedSave.id}/export.glb` : undefined"
               >
-                {{ mode.label }}
+                导出 GLB
+              </a>
+              <a
+                class="secondary-button"
+                :class="{ disabled: !summary?.artifacts?.hasPrintable }"
+                :href="summary?.artifacts?.hasPrintable ? `/api/model/${selectedSave.id}/export.stl` : undefined"
+              >
+                导出 STL
+              </a>
+              <a
+                class="secondary-button"
+                :class="{ disabled: !summary?.artifacts?.has3mf }"
+                :href="summary?.artifacts?.has3mf ? `/api/model/${selectedSave.id}/export.3mf` : undefined"
+              >
+                导出 3MF
+              </a>
+              <button class="secondary-button" @click="openCacheDir">打开缓存目录</button>
+              <button class="secondary-button" type="button" @click="operationExpanded = !operationExpanded">
+                {{ operationExpanded ? "收起高级参数" : "展开高级参数" }}
               </button>
             </div>
-          </div>
 
-          <div class="switch-grid">
-            <label class="check-line">
-              <input v-model="renderOptions.includeSaveClothing" type="checkbox" />
-              <span>包含存档服装</span>
-            </label>
-            <label class="check-line">
-              <input v-model="renderOptions.includeSaveWeapons" type="checkbox" />
-              <span>包含存档武器</span>
-            </label>
-            <label class="check-line">
-              <input v-model="renderOptions.includeWeaponAttachments" type="checkbox" />
-              <span>包含武器附件</span>
-            </label>
-            <label class="check-line">
-              <input v-model="renderOptions.export3mf" type="checkbox" />
-              <span>同时生成 3MF</span>
-            </label>
-          </div>
+            <div v-show="operationExpanded" class="operation-body">
+              <div class="control-strip">
+                <div class="mode-group">
+                  <span class="control-label">模型模式</span>
+                  <div class="mode-grid">
+                    <button
+                      v-for="mode in bodyModes"
+                      :key="mode.value"
+                      class="mode-button"
+                      :class="{ active: renderOptions.bodyMode === mode.value }"
+                      @click="applyMode(mode.value)"
+                    >
+                      {{ mode.label }}
+                    </button>
+                  </div>
+                </div>
 
-          <div class="select-grid">
-            <label>
-              <span class="control-label">动作</span>
-              <select v-model="renderOptions.poseId">
-                <option value="neutral">中性站姿</option>
-                <option value="combat-ready">战斗准备</option>
-                <option value="katana-idle">武士刀待机</option>
-                <option value="photo-mode">拍照模式</option>
-              </select>
-            </label>
-            <label>
-              <span class="control-label">表情</span>
-              <select v-model="renderOptions.expressionId">
-                <option value="neutral">自然表情</option>
-                <option value="confident">自信</option>
-                <option value="serious">严肃</option>
-                <option value="smirk">轻微笑</option>
-              </select>
-            </label>
-          </div>
-        </div>
+                <div class="switch-grid">
+                  <label class="check-line">
+                    <input v-model="renderOptions.includeSaveClothing" type="checkbox" />
+                    <span>包含存档服装</span>
+                  </label>
+                  <label class="check-line">
+                    <input v-model="renderOptions.includeSaveWeapons" type="checkbox" />
+                    <span>包含存档武器</span>
+                  </label>
+                  <label class="check-line">
+                    <input v-model="renderOptions.includeWeaponAttachments" type="checkbox" />
+                    <span>包含武器附件</span>
+                  </label>
+                  <label class="check-line">
+                    <input v-model="renderOptions.export3mf" type="checkbox" />
+                    <span>同时导出 3MF</span>
+                  </label>
+                </div>
 
-        <div class="action-row">
-          <button class="primary-button build-button" :disabled="!canBuild" @click="startBuild(true)">
-            {{ building ? "正在生成模型..." : "生成/刷新模型" }}
-          </button>
-          <a
-            class="secondary-button"
-            :class="{ disabled: !summary?.artifacts?.hasPreview }"
-            :href="summary?.artifacts?.hasPreview ? `/api/model/${selectedSave.id}/export.glb` : undefined"
-          >
-            导出 GLB
-          </a>
-          <a
-            class="secondary-button"
-            :class="{ disabled: !summary?.artifacts?.hasPrintable }"
-            :href="summary?.artifacts?.hasPrintable ? `/api/model/${selectedSave.id}/export.stl` : undefined"
-          >
-            导出 STL
-          </a>
-          <a
-            class="secondary-button"
-            :class="{ disabled: !summary?.artifacts?.has3mf }"
-            :href="summary?.artifacts?.has3mf ? `/api/model/${selectedSave.id}/export.3mf` : undefined"
-          >
-            导出 3MF
-          </a>
-          <button class="secondary-button" @click="openCacheDir">打开缓存目录</button>
-        </div>
+                <div class="select-grid">
+                  <label>
+                    <span class="control-label">姿态</span>
+                    <select v-model="renderOptions.poseId">
+                      <option value="neutral">中性</option>
+                      <option value="combat-ready">战斗准备</option>
+                      <option value="katana-idle">拔刀待机</option>
+                      <option value="photo-mode">拍照姿势</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span class="control-label">表情</span>
+                    <select v-model="renderOptions.expressionId">
+                      <option value="neutral">默认表情</option>
+                      <option value="confident">自信</option>
+                      <option value="serious">严肃</option>
+                      <option value="smirk">轻笑</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
 
-        <div class="loadout-panel">
-          <div>
-            <strong>存档穿戴识别</strong>
-            <p>{{ loadoutSummary }}</p>
-          </div>
-          <div class="slot-grid">
-            <span
-              v-for="slot in visibleSlots"
-              :key="`${slot.slot}-${slot.label}`"
-              class="slot-pill"
-              :class="{ detected: slot.detected }"
-            >
-              {{ slot.label }}：{{ slot.detected ? "已识别" : "未识别" }}
-            </span>
-          </div>
-        </div>
+              <div class="parallel-control">
+                <div class="control-label">并发解包数（1-16）</div>
+                <div class="parallel-fields">
+                  <input v-model.number="buildParallelism" type="range" min="1" max="16" step="1" />
+                  <input v-model.number="buildParallelism" type="number" min="1" max="16" step="1" />
+                  <strong>{{ buildParallelism }} 线程</strong>
+                </div>
+                <div class="parallel-note">更高并发可加速 WolvenKit 导出；如果系统内存紧张，可降低到 1~2。</div>
+              </div>
 
-        <div class="tool-grid">
-          <div class="tool-card" :class="{ ok: tools?.gameDir.found }">
-            <span>游戏资源</span>
-            <strong>{{ tools?.gameDir.message || "正在检测..." }}</strong>
-          </div>
-          <div class="tool-card" :class="{ ok: tools?.wolvenKit.found }">
-            <span>WolvenKit</span>
-            <strong>{{ tools?.wolvenKit.message || "正在检测..." }}</strong>
-          </div>
-          <div class="tool-card" :class="{ ok: tools?.blender.found }">
-            <span>Blender</span>
-            <strong>{{ tools?.blender.message || "正在检测..." }}</strong>
-          </div>
-        </div>
+              <div class="loadout-panel">
+                <div>
+                  <strong>存档着装识别</strong>
+                  <p>{{ loadoutSummary }}</p>
+                </div>
+                <div class="slot-grid">
+                  <span
+                    v-for="slot in visibleSlots"
+                    :key="`${slot.slot}-${slot.label}`"
+                    class="slot-pill"
+                    :class="{ detected: slot.detected }"
+                  >
+                    {{ slot.label }}：{{ slot.detected ? "已识别" : "未识别" }}
+                  </span>
+                </div>
+              </div>
 
-        <div v-if="allWarnings.length" class="warning-box">
-          <strong>解析提示</strong>
-          <p v-for="warning in allWarnings" :key="warning">{{ warning }}</p>
-        </div>
+              <div class="tool-grid">
+                <div class="tool-card" :class="{ ok: tools?.gameDir.found }">
+                  <span>游戏目录</span>
+                  <strong>{{ tools?.gameDir.message || "正在检测..." }}</strong>
+                </div>
+                <div class="tool-card" :class="{ ok: tools?.wolvenKit.found }">
+                  <span>WolvenKit</span>
+                  <strong>{{ tools?.wolvenKit.message || "正在检测..." }}</strong>
+                </div>
+                <div class="tool-card" :class="{ ok: tools?.blender.found }">
+                  <span>Blender</span>
+                  <strong>{{ tools?.blender.message || "正在检测..." }}</strong>
+                </div>
+              </div>
 
-        <div class="log-box">
-          <div class="log-title">
-            <strong>生成日志</strong>
-            <span>{{ activeJob?.progress ?? 0 }}%</span>
-          </div>
-          <p v-if="!activeJob?.logs.length">
-            等待生成任务。模型会从本地游戏资源读取并写入项目缓存目录，不会修改游戏目录或存档。
-          </p>
-          <p v-for="line in activeJob?.logs || []" :key="line">{{ line }}</p>
-        </div>
-      </section>
+              <div v-if="allWarnings.length" class="warning-box">
+                <strong>解析警告</strong>
+                <p v-for="warning in allWarnings" :key="warning">{{ warning }}</p>
+              </div>
+            </div>
+          </section>
+        </section>
 
       <section v-else class="empty-panel">
         <h2>请选择一个存档</h2>
-        <p>左侧扫描完成后选择存档，右侧会显示 V 的真实 3D 模型生成状态与预览。</p>
+        <p>请先启动后端并读取存档后，选择一个保存文件，生成并预览 V 的 3D 形象。</p>
       </section>
     </section>
   </main>
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
@@ -321,6 +349,7 @@ type BuildJob = {
   gameDir: string;
   status: "queued" | "running" | "done" | "error";
   progress: number;
+  parallelism: number;
   title: string;
   logs: string[];
   error: string | null;
@@ -341,11 +370,16 @@ const activeJob = ref<BuildJob | null>(null);
 const loadingSaves = ref(false);
 const loadingSelection = ref(false);
 const building = ref(false);
-const status = ref("准备就绪。");
+const status = ref("准备就绪");
 const viewerEl = ref<HTMLDivElement | null>(null);
-const viewerMessage = ref("还没有生成真实 3D 模型");
-const viewerHint = ref("点击底部“生成/刷新模型”，生成完成后这里会加载 GLB 预览。");
+const viewerMessage = ref("请先选择一个存档并点击生成");
+const viewerHint = ref("点击下方按钮生成模型，完成后会自动加载 GLB 预览。 ");
 const wireframe = ref(false);
+const operationExpanded = ref(false);
+const logScrollRef = ref<HTMLElement | null>(null);
+const buildParallelism = ref(3);
+
+const jobProgress = computed(() => Math.max(0, Math.min(100, activeJob.value?.progress ?? 0)));
 
 const renderOptions = reactive<RenderOptions>({
   bodyMode: "naked",
@@ -359,9 +393,9 @@ const renderOptions = reactive<RenderOptions>({
 
 const bodyModes: Array<{ value: BodyMode; label: string }> = [
   { value: "naked", label: "裸身体" },
-  { value: "save-outfit", label: "还原存档穿搭" },
+  { value: "save-outfit", label: "还原存档穿戴" },
   { value: "clothing-only", label: "仅服装无武器" },
-  { value: "weapons-only", label: "仅武器展示" },
+  { value: "weapons-only", label: "仅武器" },
 ];
 
 let renderer: THREE.WebGLRenderer | null = null;
@@ -388,13 +422,13 @@ const buildTone = computed(() => {
 
 const buildLabel = computed(() => {
   if (activeJob.value?.status === "running" || activeJob.value?.status === "queued") {
-    return activeJob.value.title || "生成中";
+    return activeJob.value.title || "任务进行中";
   }
   if (activeJob.value?.status === "error") {
     return "生成失败";
   }
   if (summary.value?.artifacts?.hasPreview) {
-    return summary.value.artifacts.has3mf ? "模型已生成" : "模型已生成，缺少 3MF";
+    return summary.value.artifacts.has3mf ? "已有可预览模型 / 支持 3MF" : "已有可预览模型";
   }
   return "等待生成";
 });
@@ -413,12 +447,12 @@ const visibleSlots = computed(() => {
 
 const loadoutSummary = computed(() => {
   if (!loadout.value) {
-    return "正在读取存档穿戴信息。";
+    return "正在读取着装识别信息...";
   }
   const clothingCount = loadout.value.clothingSlots.filter((slot) => slot.detected).length;
   const weaponCount = loadout.value.weaponSlots.filter((slot) => slot.detected).length;
   const candidateCount = loadout.value.resourceCandidates.length;
-  return `识别到 ${clothingCount} 个服装槽、${weaponCount} 个武器槽，资源候选 ${candidateCount} 条。`;
+  return `识别到 ${clothingCount} 套服装、${weaponCount} 件武器、${candidateCount} 条候选资源`;
 });
 
 const allWarnings = computed(() => {
@@ -438,6 +472,28 @@ const canBuild = computed(() => {
       tools.value?.blender.found,
   );
 });
+
+watch(
+  buildParallelism,
+  (value) => {
+    const normalized = Math.max(1, Math.min(16, Number.parseInt(`${value}`, 10) || 1));
+    if (normalized !== buildParallelism.value) {
+      buildParallelism.value = normalized;
+    }
+  },
+  { immediate: true },
+);
+
+watch(
+  () => `${activeJob.value?.id ?? ""}:${activeJob.value?.logs.length ?? 0}`,
+  async () => {
+    await nextTick();
+    const el = logScrollRef.value;
+    if (el) {
+      el.scrollTop = el.scrollHeight;
+    }
+  },
+);
 
 function genderLabel(value: unknown) {
   if (value === "Male") {
@@ -464,8 +520,8 @@ function formatDate(value: string): string {
 }
 
 function metaLine(save: SaveSummary): string {
-  const body = save.meta.bodyGender ? `身体：${genderLabel(save.meta.bodyGender)}` : "身体：-";
-  const level = save.meta.level ? `等级：${save.meta.level}` : "等级：-";
+  const body = save.meta.bodyGender ? `性别：${genderLabel(save.meta.bodyGender)}` : "性别：未识别";
+  const level = save.meta.level ? `等级：${save.meta.level}` : "等级：未识别";
   return `${body} / ${level}`;
 }
 
@@ -569,14 +625,13 @@ function clearModel() {
 async function loadPreviewModel() {
   if (!selectedSave.value || !summary.value?.artifacts?.hasPreview || !scene) {
     clearModel();
-    viewerMessage.value = "还没有生成真实 3D 模型";
-    viewerHint.value = "点击底部“生成/刷新模型”，生成完成后这里会加载 GLB 预览。";
+    viewerMessage.value = "请先选择一个存档并点击生成";
+    viewerHint.value = "点击下方按钮生成模型，完成后会自动加载 GLB 预览。";
     return;
   }
 
   viewerMessage.value = "正在加载 GLB 模型...";
-  viewerHint.value = "首次加载可能稍慢，完成后可旋转和缩放查看。";
-  clearModel();
+  viewerHint.value = "请耐心等待，加载完成后可继续旋转查看。";
   const loader = new GLTFLoader();
   const url = `/api/model/${selectedSave.value.id}/preview.glb?t=${Date.now()}`;
   loader.load(
@@ -603,8 +658,8 @@ async function loadPreviewModel() {
     },
     undefined,
     (error) => {
-      viewerMessage.value = "GLB 加载失败";
-      viewerHint.value = error instanceof Error ? error.message : "请重新生成模型。";
+        viewerMessage.value = "GLB 加载失败";
+        viewerHint.value = error instanceof Error ? error.message : "GLB 加载失败";
     },
   );
 }
@@ -661,7 +716,7 @@ async function loadSaves() {
     });
     saveDir.value = data.saveDir || data.defaultSaveDir;
     saves.value = data.saves || [];
-    status.value = saves.value.length ? `已找到 ${saves.value.length} 个存档。` : "没有找到 sav.dat 存档。";
+    status.value = saves.value.length ? `读取到 ${saves.value.length} 个存档` : "未找到可用的 sav.dat 存档。";
     if (saves.value.length) {
       await selectSave(saves.value[0]);
     } else {
@@ -671,7 +726,7 @@ async function loadSaves() {
       loadout.value = null;
     }
   } catch (error: unknown) {
-    status.value = error instanceof Error ? error.message : "读取存档失败。";
+    status.value = error instanceof Error ? error.message : "读取存档失败";
   } finally {
     loadingSaves.value = false;
   }
@@ -684,7 +739,7 @@ async function selectSave(save: SaveSummary) {
   loadout.value = null;
   activeJob.value = null;
   loadingSelection.value = true;
-  status.value = `正在分析 ${save.name}...`;
+    status.value = `解析中 ${save.name}...`;
   try {
     const [summaryData, appearanceData, loadoutData] = await Promise.all([
       $fetch<SaveSummaryResponse>(`/api/save/${save.id}/summary`),
@@ -694,12 +749,12 @@ async function selectSave(save: SaveSummary) {
     summary.value = summaryData;
     appearance.value = appearanceData;
     loadout.value = loadoutData;
-    status.value = `已选择 ${save.name}。`;
+    status.value = `已选择 ${save.name}`;
     await nextTick();
     initViewer();
     await loadPreviewModel();
   } catch (error: unknown) {
-    status.value = error instanceof Error ? error.message : "分析存档失败。";
+    status.value = error instanceof Error ? error.message : "解析存档失败";
   } finally {
     loadingSelection.value = false;
   }
@@ -717,8 +772,8 @@ async function startBuild(force = false) {
     return;
   }
   building.value = true;
-  viewerMessage.value = "正在生成真实 3D 模型";
-  viewerHint.value = "后端会读取本地游戏资源并写入项目缓存目录。";
+  viewerMessage.value = "正在生成 V 的 3D 模型";
+  viewerHint.value = "请耐心等待，模型任务会先导出资源再进入 Blender 合成。";
   const data = await $fetch<{ jobId: string; job: BuildJob }>("/api/model/build", {
     method: "POST",
     body: {
@@ -726,6 +781,7 @@ async function startBuild(force = false) {
       gameDir: gameDir.value,
       force,
       renderOptions: { ...renderOptions },
+      parallelism: buildParallelism.value,
     },
   });
   activeJob.value = data.job;
@@ -749,12 +805,12 @@ function pollJob(jobId: string) {
       await loadPreviewModel();
       if (job.status === "error") {
         viewerMessage.value = "模型生成未完成";
-        viewerHint.value = job.error || "请查看底部生成日志。";
+        viewerHint.value = job.error || "请查看日志了解详细错误";
       }
     } catch (error: unknown) {
       building.value = false;
       viewerMessage.value = "任务轮询失败";
-      viewerHint.value = error instanceof Error ? error.message : "请重新点击生成。";
+      viewerHint.value = error instanceof Error ? error.message : "请重试或查看后端日志";
     }
   }, 800);
 }
@@ -766,7 +822,7 @@ async function openCacheDir() {
   const data = await $fetch<{ cacheDir: string; opened: boolean }>(`/api/model/${selectedSave.value.id}/cache.open`, {
     method: "POST",
   });
-  status.value = data.opened ? "已打开缓存目录。" : `缓存目录：${data.cacheDir}`;
+  status.value = data.opened ? "已打开缓存目录" : `打开缓存目录失败：${data.cacheDir}`;
 }
 
 onMounted(async () => {
@@ -820,8 +876,8 @@ onBeforeUnmount(() => {
 .content {
   min-width: 0;
   padding: 24px;
-  display: grid;
-  grid-template-rows: auto minmax(430px, 1fr) auto;
+  display: flex;
+  flex-direction: column;
   gap: 16px;
 }
 
@@ -1025,12 +1081,33 @@ a {
 }
 
 .summary-bar,
-.viewer-panel,
-.action-panel,
+.main-workspace,
 .empty-panel {
   border: 1px solid #2f3a4c;
   border-radius: 8px;
   background: #101827;
+}
+
+.main-workspace {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, min(380px, 38vw));
+  align-items: start;
+  gap: 16px;
+}
+
+.operation-dock {
+  position: sticky;
+  bottom: 16px;
+  z-index: 10;
+}
+
+.work-zone {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
 }
 
 .summary-bar {
@@ -1101,6 +1178,16 @@ a {
   overflow: hidden;
 }
 
+.log-dock {
+  min-width: 0;
+  min-height: 430px;
+  max-height: calc(100vh - 180px);
+  position: sticky;
+  top: 16px;
+  display: flex;
+  flex-direction: column;
+}
+
 .viewer-toolbar {
   display: flex;
   align-items: center;
@@ -1155,6 +1242,60 @@ a {
 
 .action-panel {
   padding: 16px;
+  border: 1px solid #2f3a4c;
+  border-radius: 8px;
+  background: #101827;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.26);
+}
+
+.action-quick {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.action-quick .primary-button {
+  width: 100%;
+}
+
+.log-box {
+  border: 1px solid #2d384a;
+  border-radius: 8px;
+  padding: 12px;
+  background: #0d1320;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  max-height: inherit;
+}
+
+.log-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin-top: 8px;
+  padding-right: 6px;
+}
+
+.log-progress-track {
+  width: 100%;
+  height: 10px;
+  margin-top: 8px;
+  border-radius: 999px;
+  background: #1b2532;
+  overflow: hidden;
+  border: 1px solid #2f3a4c;
+}
+
+.log-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #ffd84d, #66e3ff);
+  transition: width 200ms ease;
 }
 
 .control-strip {
@@ -1220,6 +1361,11 @@ a {
   grid-template-columns: minmax(180px, 240px) repeat(4, minmax(120px, auto));
   gap: 10px;
   margin-bottom: 14px;
+}
+
+.operation-body {
+  display: grid;
+  gap: 14px;
 }
 
 .build-button {
@@ -1326,6 +1472,38 @@ a {
   margin: 7px 0 0;
   color: #d7deeb;
   line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.parallel-control {
+  border: 1px solid #2d384a;
+  border-radius: 8px;
+  padding: 10px;
+  background: #0d1320;
+}
+
+.parallel-fields {
+  margin-top: 8px;
+  display: grid;
+  grid-template-columns: 1fr 110px auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.parallel-fields input[type="range"] {
+  width: 100%;
+}
+
+.parallel-fields input[type="number"] {
+  min-width: 0;
+  width: 110px;
+}
+
+.parallel-note {
+  margin-top: 6px;
+  color: #9aa7bb;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .log-title {
@@ -1362,12 +1540,24 @@ a {
     max-height: 360px;
   }
 
+  .main-workspace,
   .summary-bar,
   .control-strip,
-  .action-row,
   .loadout-panel,
   .tool-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .action-quick {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .parallel-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .operation-dock {
+    position: static;
   }
 }
 
@@ -1377,15 +1567,27 @@ a {
     padding: 16px;
   }
 
+  .main-workspace {
+    grid-template-columns: 1fr;
+  }
+
   .summary-bar,
   .control-strip,
   .mode-grid,
   .switch-grid,
   .select-grid,
-  .action-row,
   .loadout-panel,
-  .tool-grid {
+  .tool-grid,
+  .action-quick {
     grid-template-columns: 1fr;
+  }
+
+  .work-zone {
+    gap: 10px;
+  }
+
+  .viewer-panel {
+    min-height: 360px;
   }
 
   .viewer-toolbar {
@@ -1394,3 +1596,4 @@ a {
   }
 }
 </style>
+

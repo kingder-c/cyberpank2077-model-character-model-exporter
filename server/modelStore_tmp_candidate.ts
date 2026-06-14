@@ -45,7 +45,6 @@ export type ModelBuildJob = {
   gameDir: string;
   status: "queued" | "running" | "done" | "error";
   progress: number;
-  parallelism: number;
   title: string;
   logs: string[];
   error: string | null;
@@ -60,7 +59,6 @@ type BuildRequest = {
   gameDir?: string;
   force?: boolean;
   renderOptions?: Partial<RenderOptions>;
-  parallelism?: number;
 };
 
 const jobs = new Map<string, ModelBuildJob>();
@@ -241,29 +239,31 @@ export function detectTools(gameDir = getDefaultGameDir()): ToolStatus {
       found: Boolean(wolvenKit),
       path: wolvenKit,
       message: wolvenKit
-        ? "已找到 WolvenKit CLI，可用于从游戏 archive 导出 REDengine 模型资源。"
-        : "未找到 WolvenKit CLI。请把 WolvenKit.CLI.exe 放到 resource 目录，或设置 WOLVENKIT_CLI。",
+        ? "�Ѽ�⵽ WolvenKit CLI�������ڴ� .archive �е��� REDengine ģ����Դ��"
+        : "δ��⵽ WolvenKit CLI���뽫 WolvenKit.CLI.exe ���� resource Ŀ¼�������� WOLVENKIT_CLI ����������",
     },
     blender: {
       found: Boolean(blender),
       path: blender,
       message: blender
-        ? "已找到 Blender，可用于合并模型并导出 GLB/STL。"
-        : "未找到 Blender。请把 blender.exe 放到 resource\\Blender 目录，或设置 BLENDER_EXE。",
+        ? "�Ѽ�⵽ Blender�������ںϳɲ���� GLB / STL / 3MF��"
+        : "δ��⵽ Blender���뽫 blender.exe ���� resource\\Blender Ŀ¼�������� BLENDER_EXE ����������",
     },
     redMod: {
       found: Boolean(redMod),
       path: redMod,
-      message: redMod ? "已找到游戏自带 REDmod，可作为辅助工具。" : "未找到 REDmod。",
+      message: redMod
+        ? "�Ѽ�⵽ REDmod����ѡ���������ڲ��ָ߼���Դ�޸���"
+        : "δ��⵽ REDmod��",
     },
     gameDir: {
       found: existsSync(gameDir) && hasArchive,
       path: gameDir,
-      message: existsSync(gameDir)
-        ? hasArchive
-          ? "游戏目录有效，已检测到核心 appearance archive。"
-          : "游戏目录存在，但缺少 basegame_4_appearance.archive。"
-        : "游戏目录不存在。",
+    message: existsSync(gameDir)
+      ? hasArchive
+          ? "��ϷĿ¼���������ҵ� basegame_4_appearance.archive��"
+          : "��ϷĿ¼���ڣ���ȱ�� basegame_4_appearance.archive��"
+        : "��ϷĿ¼�����ڡ�",
     },
   };
 }
@@ -281,7 +281,7 @@ function pushLog(job: ModelBuildJob, message: string) {
   job.updatedAt = new Date().toISOString();
 }
 
-function createJob(saveId: string, gameDir: string, renderOptions: RenderOptions, parallelism: number): ModelBuildJob {
+function createJob(saveId: string, gameDir: string, renderOptions: RenderOptions): ModelBuildJob {
   const id = randomUUID();
   const job: ModelBuildJob = {
     id,
@@ -289,7 +289,6 @@ function createJob(saveId: string, gameDir: string, renderOptions: RenderOptions
     gameDir,
     status: "queued",
     progress: 0,
-    parallelism,
     title: "等待生成",
     logs: [],
     error: null,
@@ -318,7 +317,7 @@ function createManifest(appearance: VAppearancePreset, tools: ToolStatus, gameDi
     appearance,
     tools,
     note:
-      "此 manifest 记录从存档解析出的基础 V 外观映射，以及 WolvenKit/Blender 生成 preview.glb 和 print.stl 的本地工具状态。",
+      "manifest ��¼�����ڸ��� V ��ɫ���εĲ�������Դӳ�䡣�� WolvenKit/Blender ���� preview.glb �� print.stl��",
   };
 }
 
@@ -328,18 +327,16 @@ function createBuildManifest(
   tools: ToolStatus,
   gameDir: string,
   renderOptions: RenderOptions,
-  parallelism: number,
 ) {
   return {
     generatedAt: new Date().toISOString(),
     gameDir,
     renderOptions,
-    parallelism,
     appearance,
     loadout,
     tools,
     note:
-      "此 manifest 记录从存档解析出的 V 外观、装备识别、渲染选项，以及 WolvenKit/Blender 生成 preview.glb、print.stl、print.3mf 的本地工具状态。",
+      "manifest ��¼�����ڸ��� V ��ɫ����봩��/�������á��� WolvenKit/Blender ���� preview.glb��print.stl��print.3mf��",
   };
 }
 
@@ -349,10 +346,10 @@ function getToolBlockers(tools: ToolStatus) {
     blockers.push(tools.gameDir.message);
   }
   if (!tools.wolvenKit.found) {
-    blockers.push("缺少 WolvenKit CLI，无法从 .archive 导出 .mesh 资源。");
+    blockers.push("ȱ�� WolvenKit CLI���޷��� .archive ���� .mesh ��Դ��");
   }
   if (!tools.blender.found) {
-    blockers.push("缺少 Blender，无法合并模型并导出 GLB/STL。");
+    blockers.push("ȱ�� Blender���޷��ϲ������� GLB / STL / 3MF��");
   }
   return blockers;
 }
@@ -436,10 +433,6 @@ function parsePositiveInt(value: string | undefined, fallback: number) {
   return parsed;
 }
 
-function clampParallelism(value: number | undefined, fallback: number) {
-  return Math.max(1, Math.min(16, parsePositiveInt(String(value), fallback)));
-}
-
 function getUncookParallelism() {
   const parallelism = parsePositiveInt(process.env.CP2077_UNCOOK_PARALLELISM, 3);
   return Math.max(1, Math.min(16, parallelism));
@@ -515,15 +508,15 @@ type ModelSource = {
 
 function renderModeLabel(mode: BodyMode) {
   if (mode === "save-outfit") {
-    return "还原存档穿搭";
+    return "��ԭ�浵����";
   }
   if (mode === "clothing-only") {
-    return "仅服装无武器";
+    return "����װ";
   }
   if (mode === "weapons-only") {
-    return "仅武器展示";
+    return "������";
   }
-  return "裸身体";
+  return "������";
 }
 
 async function uncookMeshResource(
@@ -566,7 +559,7 @@ async function uncookMeshResource(
     return fallback;
   }
 
-  throw new Error(`WolvenKit 没有生成 ${resourceFileName(resourcePath)}。`);
+  throw new Error(`WolvenKit δ�ܵ��� ${resourceFileName(resourcePath)}��`);
 }
 
 const archiveSearchCache = new Map<string, Promise<string[]>>();
@@ -667,9 +660,9 @@ async function searchArchiveMeshesForItem(
     .map((item) => item.resourcePath);
 
   if (ranked.length) {
-    onLog(`已为 ${itemName} 找到候选 mesh：${ranked[0]}`);
+    onLog(`��Ϊ ${itemName} �ҵ���ѡ mesh��${ranked[0]}`);
   } else {
-    onLog(`未能为 ${itemName} 找到可导出的 mesh。`);
+    onLog(`δ��Ϊ ${itemName} �ҵ���ƥ��� mesh��`);
   }
   return ranked.slice(0, 1);
 }
@@ -807,7 +800,7 @@ async function resolveEntityAppearance(
 
   const entityPath = ENTITY_RESOURCE_BY_NAME[hint.entityName];
   if (!entityPath) {
-    pushLog(job, `${hint.record || hint.entityName} 暂不支持 entityName=${hint.entityName} 的自动实体解析。`);
+    pushLog(job, `${hint.record || hint.entityName} ��֧�ֵ�ʵ��: entityName=${hint.entityName}`);
     return null;
   }
 
@@ -816,7 +809,7 @@ async function resolveEntityAppearance(
   );
   const appearances = json?.Data?.RootChunk?.appearances;
   if (!Array.isArray(appearances)) {
-    pushLog(job, `${entityPath} 未找到 appearances 列表。`);
+    pushLog(job, `${entityPath} ȱ�� appearances ����`);
     return null;
   }
 
@@ -838,7 +831,7 @@ async function resolveEntityAppearance(
 
   const best = candidates[0];
   if (!best) {
-    pushLog(job, `${hint.record || hint.appearanceName} 未在 ${entityPath} 中匹配到 ${hint.appearanceName}。`);
+    pushLog(job, `${hint.record || hint.appearanceName} �� ${entityPath} δ���� appearance=${hint.appearanceName}`);
     return null;
   }
 
@@ -871,7 +864,7 @@ async function resolveAppAppearanceMeshes(match: EntityAppearanceMatch, job: Mod
   );
   const appearances = json?.Data?.RootChunk?.appearances;
   if (!Array.isArray(appearances)) {
-    pushLog(job, `${match.appPath} 未找到 appearances 列表。`);
+    pushLog(job, `${match.appPath} ȱ�� appearances ����`);
     return [];
   }
 
@@ -890,15 +883,15 @@ async function resolveAppAppearanceMeshes(match: EntityAppearanceMatch, job: Mod
 
   const best = candidates[0];
   if (!best) {
-    pushLog(job, `${match.appPath} 未找到 appearance=${match.appAppearanceName} 的 mesh 分支。`);
+    pushLog(job, `${match.appPath} δ�ҵ� appearance=${match.appAppearanceName} �� mesh`);
     return [];
   }
 
   const meshes = [...collectMeshPaths(best.data)];
   if (meshes.length) {
-    pushLog(job, `${match.appAppearanceName} 解析到 ${meshes.length} 个 mesh。`);
+    pushLog(job, `${match.appAppearanceName} ������ ${meshes.length} �� mesh`);
   } else {
-    pushLog(job, `${match.appAppearanceName} 没有解析到 mesh。`);
+    pushLog(job, `${match.appAppearanceName} δ������ mesh`);
   }
   return meshes;
 }
@@ -926,7 +919,7 @@ async function resolveRuntimeSlotMeshes(
   const text = `${hint.record} ${hint.entityName} ${hint.itemType} ${hint.equipArea}`;
   if (role === "weapon" && /StrongArms|Cyb_StrongArms|ArmsCW|a0_005__strongarms/i.test(text)) {
     const meshes = strongArmsMeshes(appearance.bodyVariant);
-    pushLog(job, `${hint.record || "StrongArms"} 使用大猩猩手臂 mesh：${meshes.join("、")}`);
+    pushLog(job, `${hint.record || "StrongArms"} ʹ����֫��������${meshes.join(", ")}`);
     return meshes;
   }
 
@@ -973,12 +966,16 @@ async function resolveLoadoutResources(
     }
   }
 
-  if (names.length) {
+    if (names.length) {
+    const roleName = role === "clothing" ? "��װ" : "����";
     pushLog(
       job,
-      `已识别到 ${role === "clothing" ? "服装" : "武器"} TweakDB 线索：${names
+      `
+      `��⵽ ${roleName} �� TweakDB ��ѡ��${names
         .slice(0, 6)
-        .join("、")}。严格还原模式不会再用文件名猜测 mesh，下一步需要解析 TweakDB -> .ent/.app -> 组件 mesh 的真实链路。`,
+        .map((item) => item.replace(/^Items\./i, ""))
+        .join(", ")}�������δ�����������˵� .ent/.app -> ʵ�� mesh ���̡�
+      `,
     );
   }
 
@@ -1032,7 +1029,7 @@ async function probeHeuristicLoadoutCandidates(
     const usable =
       role === "clothing" ? matches.filter((resourcePath) => /\\characters\\garment\\/i.test(resourcePath)) : matches;
     if (role === "clothing" && matches.length && !usable.length) {
-      pushLog(job, `${name} 的候选资源不是角色服装 mesh，已跳过。`);
+      pushLog(job, `${name} 的候选资源不是角色服�?mesh，已跳过。`);
     }
     discovered.push(...usable);
   }
@@ -1361,7 +1358,7 @@ if OPTIONS.get("export3mf", True):
 
 async function attemptExternalBuild(job: ModelBuildJob, appearance: VAppearancePreset, tools: ToolStatus) {
   if (!tools.wolvenKit.path || !tools.blender.path) {
-    throw new Error("缺少 WolvenKit 或 Blender。");
+    throw new Error("缺少 WolvenKit �?Blender�?);
   }
 
   const resources =
@@ -1371,7 +1368,7 @@ async function attemptExternalBuild(job: ModelBuildJob, appearance: VAppearanceP
   const bodyMesh = resources?.bodyMesh;
   const headMesh = resources?.headMesh;
   if (!bodyMesh || !headMesh) {
-    throw new Error("存档外观没有映射到可导出的 body/head 资源。");
+    throw new Error("存档外观没有映射到可导出�?body/head 资源�?);
   }
 
   const cacheDir = getSaveModelCacheDir(job.saveId);
@@ -1379,13 +1376,13 @@ async function attemptExternalBuild(job: ModelBuildJob, appearance: VAppearanceP
   await fsp.rm(exportDir, { recursive: true, force: true });
   await fsp.mkdir(exportDir, { recursive: true });
 
-  pushLog(job, "开始用 WolvenKit 从游戏资源导出基础身体模型。");
+  pushLog(job, "开始用 WolvenKit 从游戏资源导出基础身体模型�?);
   setJob(job, { progress: 52, title: "导出身体模型" });
   const bodyGlb = await uncookMeshResource(tools.wolvenKit.path, job.gameDir, bodyMesh, exportDir, (line) =>
     pushLog(job, line),
   );
 
-  pushLog(job, "开始用 WolvenKit 从游戏资源导出基础头部模型。");
+  pushLog(job, "开始用 WolvenKit 从游戏资源导出基础头部模型�?);
   setJob(job, { progress: 68, title: "导出头部模型" });
   const headGlb = await uncookMeshResource(tools.wolvenKit.path, job.gameDir, headMesh, exportDir, (line) =>
     pushLog(job, line),
@@ -1399,17 +1396,17 @@ async function attemptExternalBuild(job: ModelBuildJob, appearance: VAppearanceP
     sourceGlbs,
   });
 
-  pushLog(job, "开始用 Blender 合并 body/head，并导出预览 GLB 与打印 STL。");
-  setJob(job, { progress: 82, title: "合并并导出模型" });
+  pushLog(job, "开始用 Blender 合并 body/head，并导出预览 GLB 与打�?STL�?);
+  setJob(job, { progress: 82, title: "合并并导出模�? });
   const scriptPath = await writeBlenderAssemblyScript(job.saveId, appearance, sourceGlbs);
   await runProcess(tools.blender.path, ["--background", "--python", scriptPath], cacheDir, (line) => pushLog(job, line));
 
   const artifacts = getArtifacts(job.saveId);
   if (!artifacts.hasPreview || !artifacts.hasPrintable) {
-    throw new Error("Blender 运行完成，但没有生成 preview.glb 或 print.stl。");
+    throw new Error("Blender 运行完成，但没有生成 preview.glb �?print.stl�?);
   }
 
-  pushLog(job, "模型生成完成：preview.glb 与 print.stl 已写入缓存目录。");
+  pushLog(job, "模型生成完成：preview.glb �?print.stl 已写入缓存目录�?);
   setJob(job, { progress: 96, title: "模型导出完成", artifacts });
 }
 
@@ -1419,15 +1416,14 @@ async function attemptEnhancedExternalBuild(
   loadout: VLoadoutPreset,
   tools: ToolStatus,
   renderOptions: RenderOptions,
-  parallelism?: number,
 ) {
   if (!tools.wolvenKit.path || !tools.blender.path) {
-    throw new Error("缺少 WolvenKit 或 Blender。");
+    throw new Error("ȱ�� WolvenKit �� Blender��");
   }
 
   const resources = appearance.resourcePaths;
   if (!resources.bodyMesh || !resources.headMesh) {
-    throw new Error("存档外观没有映射到可导出的 body/head 资源。");
+    throw new Error("�浵��ɫδ�ҵ��ɵ����� body/head ��Դ��");
   }
 
   const cacheDir = getSaveModelCacheDir(job.saveId);
@@ -1437,13 +1433,12 @@ async function attemptEnhancedExternalBuild(
 
   const sources: ModelSource[] = [];
   const missingOptional: string[] = [];
-  const effectiveParallelism = clampParallelism(parallelism, getUncookParallelism());
-  pushLog(job, `使用并行任务数：${effectiveParallelism}。`);
+  const parallelism = getUncookParallelism();
 
   async function addMesh(role: ModelSourceRole, label: string, resourcePath: string, required: boolean) {
     if (!resourcePath) {
       if (!required) {
-        missingOptional.push(`${label} 没有可用资源路径`);
+        missingOptional.push(`${label} û�п��õ���Դ·��`);
       }
       return;
     }
@@ -1452,14 +1447,14 @@ async function attemptEnhancedExternalBuild(
         pushLog(job, line),
       );
       sources.push({ role, label, resourcePath, glbPath });
-      pushLog(job, `已导出 ${label}：${resourcePath}`);
+      pushLog(job, `�����ɹ� ${label}��${resourcePath}`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (required) {
-        throw new Error(`${label} 导出失败：${message}`);
+        throw new Error(`${label} ����ʧ�ܣ�${message}`);
       }
-      missingOptional.push(`${label} 导出失败：${message}`);
-      pushLog(job, `${label} 未合并：${message}`);
+      missingOptional.push(`${label} ����ʧ�ܣ�${message}`);
+      pushLog(job, `${label} ������${message}`);
     }
   }
 
@@ -1474,33 +1469,33 @@ async function attemptEnhancedExternalBuild(
       return;
     }
 
-    await runWithConcurrency(taskEntries, effectiveParallelism, (done, total) => {
+    await runWithConcurrency(taskEntries, parallelism, (done, total) => {
       const progress = total ? startProgress + (done / total) * (endProgress - startProgress) : endProgress;
       setJob(job, { progress: Math.round(progress), title });
     });
   };
 
-  pushLog(job, `渲染模式：${renderModeLabel(renderOptions.bodyMode)}。`);
+  pushLog(job, `��Ⱦģʽ��${renderModeLabel(renderOptions.bodyMode)}����ʼ����...`);
   await runMeshBatch(
-    "导出裸身体基础模型",
+    "�������������ģ��",
     50,
     68,
     [
-      () => addMesh("body", "身体/躯干/腿部", resources.bodyMesh, true),
-      () => addMesh("head", "头部", resources.headMesh, true),
-      () => addMesh("arms", "手臂/手", resources.armsMesh, true),
+      () => addMesh("body", "����/����/����", resources.bodyMesh, true),
+      () => addMesh("head", "ͷ��", resources.headMesh, true),
+      () => addMesh("arms", "�ֱۺ���", resources.armsMesh, true),
     ],
   );
 
   await runMeshBatch(
-    "导出头发/眼睛/义体",
+    "����ͷ��/�۾�/��֫",
     68,
     70,
     [
-      ...distinctPaths(resources.hairMeshes).map((resourcePath) => () => addMesh("hair", "发型", resourcePath, false)),
-      ...distinctPaths(resources.eyeMeshes).map((resourcePath) => () => addMesh("eyes", "眼睛", resourcePath, false)),
+      ...distinctPaths(resources.hairMeshes).map((resourcePath) => () => addMesh("hair", "ͷ��", resourcePath, false)),
+      ...distinctPaths(resources.eyeMeshes).map((resourcePath) => () => addMesh("eyes", "�۾�", resourcePath, false)),
       ...distinctPaths(resources.cyberwareMeshes).map((resourcePath) =>
-        () => addMesh("cyberware", "义体外观", resourcePath, false),
+        () => addMesh("cyberware", "��֫", resourcePath, false),
       ),
     ],
   );
@@ -1510,46 +1505,44 @@ async function attemptEnhancedExternalBuild(
   const attachmentResources = loadout.attachmentSlots.flatMap((slot) => slot.resolvedResourcePaths);
 
   if (renderOptions.includeSaveClothing || renderOptions.bodyMode === "save-outfit" || renderOptions.bodyMode === "clothing-only") {
-    setJob(job, { progress: 72, title: "搜索并导出存档服装" });
+    setJob(job, { progress: 72, title: "�����������浵��װ" });
     clothingResources = await resolveLoadoutResources("clothing", loadout.clothingSlots, job, appearance, tools);
-    if (!clothingResources.length) {
+    if (!clothingResources.length && renderOptions.bodyMode === "save-outfit") {
       throw new Error(
-        "已启用存档服装，但当前还没有从存档解析出精确的服装 .ent/.app/.mesh 资源链路。为避免生成错误穿搭，已停止构建；下一步需要完成 TweakDB -> entity/app -> mesh 解析，或从游戏运行时导出当前装备状态。",
+        "δ�ҵ��ɵ����Ĵ浵��װ��Դ��.ent/.app/.mesh������ȷ�Ϸ�װ��λʶ����ȷ����رա������浵��װ����",
       );
     }
     await runMeshBatch(
-      "搜索并导出存档服装",
+      "�����浵��װ",
       72,
       80,
-      distinctPaths(clothingResources).map((resourcePath) => () => addMesh("clothing", "存档服装", resourcePath, false)),
+      distinctPaths(clothingResources).map((resourcePath) => () => addMesh("clothing", "�浵��װ", resourcePath, false)),
     );
   }
 
   if (renderOptions.includeSaveWeapons || renderOptions.bodyMode === "save-outfit" || renderOptions.bodyMode === "weapons-only") {
-    setJob(job, { progress: 76, title: "搜索并导出存档武器" });
+    setJob(job, { progress: 80, title: "�����������浵����" });
     weaponResources = await resolveLoadoutResources("weapon", loadout.weaponSlots, job, appearance, tools);
-    if (!weaponResources.length) {
-      throw new Error(
-        "已启用存档武器，但当前还没有从存档解析出精确的武器 .ent/.app/.mesh 资源链路。为避免生成错误武器，已停止构建；下一步需要完成 TweakDB -> entity/app -> mesh 解析，或从游戏运行时导出当前装备状态。",
-      );
+    if (!weaponResources.length && renderOptions.bodyMode === "save-outfit") {
+      throw new Error("δ�ҵ��ɵ����Ĵ浵������Դ��.ent/.app/.mesh������ȷ��������λʶ����ȷ����رա������浵��������");
     }
     await runMeshBatch(
-      "搜索并导出存档武器",
+      "�����浵����",
       80,
       86,
-      distinctPaths(weaponResources).map((resourcePath) => () => addMesh("weapon", "存档武器", resourcePath, false)),
+      distinctPaths(weaponResources).map((resourcePath) => () => addMesh("weapon", "�浵����", resourcePath, false)),
     );
   }
 
   if (renderOptions.includeWeaponAttachments) {
     if (!attachmentResources.length) {
-      pushLog(job, "已启用武器附件，但当前没有解析到可直接导出的附件 mesh。");
+      pushLog(job, "��ǰװ��������λδ��⵽��ʶ�𸽼���Դ����������");
     }
     await runMeshBatch(
-      "导出武器附件",
+      "������������",
       86,
       90,
-      distinctPaths(attachmentResources).map((resourcePath) => () => addMesh("weapon", "武器附件", resourcePath, false)),
+      distinctPaths(attachmentResources).map((resourcePath) => () => addMesh("weapon", "��������", resourcePath, false)),
     );
   }
 
@@ -1564,44 +1557,44 @@ async function attemptEnhancedExternalBuild(
     missingOptional,
   });
 
-  pushLog(job, "开始用 Blender 合并模型、套用基础 PBR 颜色，并导出 GLB/STL/3MF。");
-  setJob(job, { progress: 82, title: "合并并导出模型" });
+  pushLog(job, "���� Blender �ϲ�������ģ�ͣ����Ա��� PBR ��ɫ���������� GLB/STL/3MF��");
+  setJob(job, { progress: 92, title: "Blender �ϲ�������ģ��" });
   const scriptPath = await writeEnhancedBlenderAssemblyScript(job.saveId, appearance, sources, renderOptions);
   await runProcess(tools.blender.path, ["--background", "--python", scriptPath], cacheDir, (line) => pushLog(job, line));
 
   const artifacts = getArtifacts(job.saveId);
   if (!artifacts.hasPreview || !artifacts.hasPrintable || (renderOptions.export3mf && !artifacts.has3mf)) {
-    throw new Error("Blender 已运行完成，但没有生成完整的 preview.glb、print.stl 或 print.3mf。");
+    throw new Error("Blender ִ����ɣ���δ����Ԥ�ڵ� preview.glb��print.stl �� print.3mf��");
   }
 
-  pushLog(job, "模型生成完成：preview.glb、print.stl、print.3mf 已写入缓存目录。");
-  setJob(job, { progress: 96, title: "模型导出完成", artifacts });
+  pushLog(job, "ģ�͵�����ɣ�����Ԥ�����鿴 review.glb������ GLB/STL/3MF��");
+  setJob(job, { progress: 96, title: "ģ�͵������", artifacts });
 }
 
-async function runBuild(job: ModelBuildJob, force: boolean, parallelism: number) {
+async function runBuild(job: ModelBuildJob, force: boolean) {
   setJob(job, { status: "running", progress: 5, title: "读取存档" });
   try {
     const renderOptions = job.renderOptions;
     const save = await getSaveById(job.saveId);
     if (!save) {
-      throw new Error("未找到该存档，请重新扫描。");
+      throw new Error("未找到该存档，请重新扫描�?);
     }
 
     const artifacts = getArtifacts(job.saveId);
     const cachedArtifactsReady = artifacts.hasPreview && artifacts.hasPrintable && (!renderOptions.export3mf || artifacts.has3mf);
     if (!force && cachedArtifactsReady) {
-      pushLog(job, "已存在缓存模型，直接复用。");
-      setJob(job, { status: "done", progress: 100, title: "模型已缓存", artifacts });
+      pushLog(job, "已存在缓存模型，直接复用�?);
+      setJob(job, { status: "done", progress: 100, title: "模型已缓�?, artifacts });
       return;
     }
 
     const analysis = await analyzeSave(job.saveId);
     if (!analysis) {
-      throw new Error("无法分析存档。");
+      throw new Error("无法分析存档�?);
     }
 
     setJob(job, { progress: 24, title: "解析外观" });
-    pushLog(job, `已识别基础模型：${analysis.appearance.bodyVariant.toUpperCase()}。`);
+    pushLog(job, `已识别基础模型�?{analysis.appearance.bodyVariant.toUpperCase()}。`);
 
     const tools = detectTools(job.gameDir);
     const cacheDir = getSaveModelCacheDir(job.saveId);
@@ -1611,7 +1604,7 @@ async function runBuild(job: ModelBuildJob, force: boolean, parallelism: number)
     await writeJson(artifactPath(job.saveId, "render-options.json"), renderOptions);
     await writeJson(
       artifactPath(job.saveId, "manifest.json"),
-      createBuildManifest(analysis.appearance, analysis.loadout, tools, job.gameDir, renderOptions, parallelism),
+      createBuildManifest(analysis.appearance, analysis.loadout, tools, job.gameDir, renderOptions),
     );
 
     setJob(job, { progress: 42, title: "检查工具链", artifacts: getArtifacts(job.saveId) });
@@ -1620,18 +1613,18 @@ async function runBuild(job: ModelBuildJob, force: boolean, parallelism: number)
       for (const blocker of blockers) {
         pushLog(job, blocker);
       }
-      throw new Error(`模型生成被阻塞：${blockers.join("；")}`);
+      throw new Error(`模型生成被阻塞：${blockers.join("�?)}`);
     }
 
-    await attemptEnhancedExternalBuild(job, analysis.appearance, analysis.loadout, tools, renderOptions, parallelism);
+    await attemptEnhancedExternalBuild(job, analysis.appearance, analysis.loadout, tools, renderOptions);
     setJob(job, { status: "done", progress: 100, title: "模型生成完成", artifacts: getArtifacts(job.saveId) });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "模型生成失败。";
+    const message = error instanceof Error ? error.message : "模型生成失败�?;
     pushLog(job, message);
     setJob(job, {
       status: "error",
       progress: Math.max(job.progress, 50),
-      title: "模型生成未完成",
+      title: "模型生成未完�?,
       error: message,
       artifacts: getArtifacts(job.saveId),
     });
@@ -1641,9 +1634,8 @@ async function runBuild(job: ModelBuildJob, force: boolean, parallelism: number)
 export function startModelBuild(request: BuildRequest) {
   const gameDir = request.gameDir?.trim() || getDefaultGameDir();
   const renderOptions = normalizeRenderOptions(request.renderOptions);
-  const parallelism = clampParallelism(request.parallelism, getUncookParallelism());
-  const job = createJob(request.saveId, gameDir, renderOptions, parallelism);
-  void runBuild(job, Boolean(request.force), parallelism);
+  const job = createJob(request.saveId, gameDir, renderOptions);
+  void runBuild(job, Boolean(request.force));
   return job;
 }
 
@@ -1716,4 +1708,5 @@ export async function scanAndRegister(gameDir: string, query: string) {
 }
 
 export { runProcess };
+
 

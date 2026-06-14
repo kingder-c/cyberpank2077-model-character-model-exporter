@@ -5,6 +5,7 @@ type BuildBody = {
   gameDir?: string;
   force?: boolean;
   renderOptions?: Partial<RenderOptions>;
+  parallelism?: number;
 };
 
 export default defineEventHandler(async (event) => {
@@ -18,6 +19,7 @@ export default defineEventHandler(async (event) => {
     gameDir: body.gameDir,
     force: Boolean(body.force),
     renderOptions: body.renderOptions,
+    parallelism: body.parallelism,
   });
 
   return {
