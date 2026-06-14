@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { promises as fsp } from "node:fs";
 import path from "node:path";
+import { getRuntimeLoadout, type RuntimeLoadoutItem } from "./cetRuntimeStore";
 
 export type SaveSummary = {
   id: string;
@@ -711,7 +712,7 @@ function buildResourcePaths(variant: VAppearancePreset["bodyVariant"]) {
         "base\\characters\\head\\player_base_heads\\player_female_average\\h0_000_pwa_c__basehead\\h0_000_pwa_c__basehead.mesh",
       headMorphTarget: "base\\characters\\head\\player_base_heads\\player_female_average\\h0_000_pwa__morphs.morphtarget",
       armsMesh:
-        "base\\characters\\common\\player_base_bodies\\player_female_average\\arms_hq\\a0_001_pwa_base_hq__full.mesh",
+        "base\\characters\\common\\player_base_bodies\\player_female_average\\arms_hq\\a0_000_pwa_base_hq__full.mesh",
       hairMeshes: [],
       eyeMeshes: [],
       cyberwareMeshes: [],
@@ -987,7 +988,7 @@ function isClothingItemName(name: string) {
 }
 
 function isWeaponItemName(name: string) {
-  return /Weapon|Preset_|Katana|Knife|Blade|Bat|Hammer|Pistol|Revolver|Rifle|Shotgun|SMG|Sniper|Launcher|Machete|Melee/i.test(
+  return /Weapon|Preset_|Katana|Knife|Blade|Bat|Hammer|Pistol|Revolver|Rifle|Shotgun|SMG|Sniper|Launcher|Machete|Melee|Cyberware|StrongArms|Cyb_/i.test(
     name,
   );
 }
@@ -1018,6 +1019,9 @@ function clothingSlotForItem(name: string) {
 }
 
 function weaponSlotForItem(name: string) {
+  if (/StrongArms|Cyb_StrongArms|Cyberware/i.test(name)) {
+    return "Melee";
+  }
   if (/Katana|Knife|Blade|Bat|Hammer|Machete|Melee/i.test(name)) {
     return "Melee";
   }
@@ -1052,6 +1056,48 @@ function mergeCyberCatItemsIntoSlots(
   }
 }
 
+function runtimeHints(item: RuntimeLoadoutItem) {
+  return distinctLimited(
+    [
+      item.record,
+      item.entityName ? `entityName:${item.entityName}` : "",
+      item.appearanceName ? `appearanceName:${item.appearanceName}` : "",
+      item.objectAppearance ? `objectAppearance:${item.objectAppearance}` : "",
+      item.objectColorVariant ? `objectColorVariant:${item.objectColorVariant}` : "",
+      item.itemType ? `itemType:${item.itemType}` : "",
+      item.equipArea ? `equipArea:${item.equipArea}` : "",
+    ],
+    12,
+  );
+}
+
+function mergeRuntimeItemsIntoSlots(clothingSlots: LoadoutSlot[], weaponSlots: LoadoutSlot[], items: RuntimeLoadoutItem[]) {
+  const clothingBySlot = new Map(clothingSlots.map((slot) => [slot.slot, slot]));
+  const weaponBySlot = new Map(weaponSlots.map((slot) => [slot.slot, slot]));
+
+  for (const item of items) {
+    const typeText = `${item.itemCategory} ${item.itemType} ${item.equipArea} ${item.record}`;
+    const isClothing = /Clothing|Clo_|Armor/i.test(typeText);
+    const isWeapon = /Weapon|Cyb_|ArmsCW|StrongArms/i.test(typeText);
+    const slot = isClothing ? clothingBySlot.get(item.slot) : isWeapon ? weaponBySlot.get(item.slot) : null;
+    if (!slot) {
+      continue;
+    }
+
+    slot.detected = true;
+    slot.rawHints = distinctLimited([...slot.rawHints, ...runtimeHints(item)], 32);
+    slot.warnings = distinctLimited(
+      [
+        ...slot.warnings,
+        item.appearanceName
+          ? `CET 运行时识别到 ${item.record}，entityName=${item.entityName || "未知"}，appearanceName=${item.appearanceName}。`
+          : `CET 运行时识别到 ${item.record}，但还缺少可解析的 appearanceName。`,
+      ],
+      12,
+    );
+  }
+}
+
 function buildCyberCatItemPool(cybercat: CyberCatInspection | null) {
   const items = [...(cybercat?.likelyPlayerItems || []), ...(cybercat?.items || [])];
   const seen = new Set<string>();
@@ -1067,14 +1113,14 @@ function buildCyberCatItemPool(cybercat: CyberCatInspection | null) {
   return result;
 }
 
-function createLoadoutPreset(
+async function createLoadoutPreset(
   saveId: string,
   raw: Buffer,
   decompressed: Buffer | null,
   nodes: SaveNode[],
   cybercat: CyberCatInspection | null,
   cybercatWarnings: string[],
-): VLoadoutPreset {
+): Promise<VLoadoutPreset> {
   const strings = extractAsciiStrings([decompressed, raw]).filter((value) =>
     /Items\.|Attachment|Weapon|Cloth|Head|Face|Chest|Leg|Feet|Outfit|Armor|Slot|Cyberware|Equip|Inventory/i.test(value),
   );
@@ -1106,14 +1152,25 @@ function createLoadoutPreset(
   ];
   mergeCyberCatItemsIntoSlots(clothingSlots, cybercatItemPool, clothingSlotForItem, isClothingItemName);
   mergeCyberCatItemsIntoSlots(weaponSlots, cybercatItemPool, weaponSlotForItem, isWeaponItemName);
+  const runtimeLoadout = await getRuntimeLoadout();
+  if (runtimeLoadout) {
+    mergeRuntimeItemsIntoSlots(clothingSlots, weaponSlots, runtimeLoadout.items);
+  }
 
   const nodeHints = nodes
     .map((node) => node.name)
     .filter((name) => /inventory|equipment|loadout|item|weapon|clothing/i.test(name));
   const cybercatNames = cybercatItemPool.map((item) => cleanItemName(item.name)).filter(Boolean);
-  const unresolvedItems = distinctLimited([...cybercatNames, ...items, ...nodeHints], 220);
+  const runtimeNames = runtimeLoadout?.items.map((item) => item.record).filter(Boolean) || [];
+  const unresolvedItems = distinctLimited([...runtimeNames, ...cybercatNames, ...items, ...nodeHints], 240);
   const warnings = [
     "当前版本已接入 CyberCAT itemData 解析；装备名会用于后续资源搜索，但部分槽位哈希在 Names.json 中仍可能无法命名。",
+    ...(runtimeLoadout
+      ? [
+          `CET 运行时快照已合并：${runtimeLoadout.items.map((item) => item.record).join("、")}。`,
+          ...runtimeLoadout.warnings,
+        ]
+      : ["未读取到 CET 运行时装备快照；若要高还原当前穿戴，请在游戏里载入同一存档并 Reload cp2077_v_dump。"]),
     ...cybercatWarnings,
   ];
   if (cybercat?.save?.parsedItemCount) {
@@ -1158,7 +1215,7 @@ export async function analyzeSave(id: string): Promise<SaveAnalysis | null> {
     cybercat.data,
     cybercat.warnings,
   );
-  const loadout = createLoadoutPreset(save.id, buffer, decompressed, nodes, cybercat.data, cybercat.warnings);
+  const loadout = await createLoadoutPreset(save.id, buffer, decompressed, nodes, cybercat.data, cybercat.warnings);
   const hasAppearanceBlob = Boolean(appearance.appearanceNode);
 
   return {

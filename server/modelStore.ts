@@ -3,7 +3,8 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { promises as fsp } from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { analyzeSave, getSaveById, type VAppearancePreset, type VLoadoutPreset } from "./saveStore";
+import { analyzeSave, getSaveById, type LoadoutSlot, type VAppearancePreset, type VLoadoutPreset } from "./saveStore";
+import { serializeResourceGraph } from "./redResourceResolver";
 
 export const getDefaultGameDir = () => "D:\\Program Files (x86)\\Steam\\steamapps\\common\\Cyberpunk 2077";
 
@@ -473,7 +474,9 @@ async function uncookMeshResource(
     "--mesh-exporter-type",
     "Default",
     "--mesh-export-type",
-    "MeshOnly",
+    "WithMaterials",
+    "--mesh-export-material-repo",
+    exportDir,
     "--mesh-export-lod-filter",
     "--verbosity",
     "Minimal",
@@ -599,6 +602,273 @@ async function searchArchiveMeshesForItem(
   return ranked.slice(0, 1);
 }
 
+type RuntimeResourceHint = {
+  record: string;
+  entityName: string;
+  appearanceName: string;
+  itemType: string;
+  equipArea: string;
+};
+
+type EntityAppearanceMatch = {
+  entityPath: string;
+  appPath: string;
+  entityAppearanceName: string;
+  appAppearanceName: string;
+};
+
+const ENTITY_RESOURCE_BY_NAME: Record<string, string> = {
+  player_face_item: "base\\gameplay\\items\\equipment\\face\\player_face_item.ent",
+  player_head_item: "base\\gameplay\\items\\equipment\\hat\\player_head_item.ent",
+  player_inner_torso_item: "base\\gameplay\\items\\equipment\\torso\\player_inner_torso_item.ent",
+  player_outer_torso_item: "base\\gameplay\\items\\equipment\\torso\\player_outer_torso_item.ent",
+  player_legs_item: "base\\gameplay\\items\\equipment\\legs\\player_legs_item.ent",
+  player_feet_item: "base\\gameplay\\items\\equipment\\feet\\player_feet_item.ent",
+  player_outfit_item: "base\\gameplay\\items\\equipment\\outfit\\player_outfit_item.ent",
+};
+
+function getJsonString(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (value && typeof value === "object" && "$value" in value) {
+    return String((value as { $value?: unknown }).$value || "");
+  }
+  return "";
+}
+
+function hintValue(slot: LoadoutSlot, key: string) {
+  const prefix = `${key}:`;
+  const match = slot.rawHints.find((hint) => hint.toLowerCase().startsWith(prefix.toLowerCase()));
+  return match ? match.slice(prefix.length).trim() : "";
+}
+
+function slotRuntimeHint(slot: LoadoutSlot): RuntimeResourceHint | null {
+  const entityName = hintValue(slot, "entityName");
+  const appearanceName = hintValue(slot, "appearanceName");
+  const itemType = hintValue(slot, "itemType");
+  const equipArea = hintValue(slot, "equipArea");
+  const records = slot.rawHints.filter((hint) => /^Items\./i.test(hint));
+  const record =
+    records.find((hint) => /StrongArms|Cyberware|Cyb_/i.test(`${hint} ${entityName} ${itemType} ${equipArea}`)) ||
+    records[0] ||
+    "";
+  if (!record && !entityName && !appearanceName) {
+    return null;
+  }
+  return { record, entityName, appearanceName, itemType, equipArea };
+}
+
+function resourceJsonOutDir(saveId: string) {
+  return path.join(getSaveModelCacheDir(saveId), "serialized-resources");
+}
+
+async function readSerializedResourceJson(
+  wolvenKitExe: string,
+  gameDir: string,
+  saveId: string,
+  resourcePath: string,
+  onLog: (line: string) => void,
+) {
+  const graph = await serializeResourceGraph(wolvenKitExe, gameDir, resourcePath, resourceJsonOutDir(saveId), onLog);
+  if (!graph.jsonPath || !existsSync(graph.jsonPath)) {
+    return null;
+  }
+  return JSON.parse(await fsp.readFile(graph.jsonPath, "utf8"));
+}
+
+function collectMeshPaths(value: unknown, result = new Set<string>()) {
+  if (!value || typeof value !== "object") {
+    return result;
+  }
+
+  if (
+    "$type" in value &&
+    "$value" in value &&
+    String((value as { $type?: unknown }).$type).toLowerCase() === "resourcepath"
+  ) {
+    const resourcePath = String((value as { $value?: unknown }).$value || "").replace(/\//g, "\\");
+    if (/\.mesh$/i.test(resourcePath) && !/\\shadow_meshes\\/i.test(resourcePath)) {
+      result.add(resourcePath);
+    }
+  }
+
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectMeshPaths(item, result));
+  } else {
+    Object.values(value).forEach((item) => collectMeshPaths(item, result));
+  }
+
+  return result;
+}
+
+function scoreEntityAppearance(
+  item: { name: string; appAppearanceName: string },
+  hint: RuntimeResourceHint,
+  appearance: VAppearancePreset,
+) {
+  const wanted = hint.appearanceName.toLowerCase();
+  const name = item.name.toLowerCase();
+  const appName = item.appAppearanceName.toLowerCase();
+  let score = 0;
+  if (wanted && name === wanted) score += 80;
+  if (wanted && name.startsWith(wanted)) score += 60;
+  if (wanted && name.includes(wanted)) score += 40;
+  if (wanted && appName.includes(wanted.replace(/^set_01/, ""))) score += 20;
+  if (appearance.bodyGender === "Female" && name.includes("&female")) score += 12;
+  if (appearance.bodyGender === "Male" && name.includes("&male")) score += 12;
+  if (name.includes("&tpp")) score += 6;
+  if (name.includes("&fpp")) score -= 10;
+  if (appName.includes("_fpp")) score -= 10;
+  return score;
+}
+
+async function resolveEntityAppearance(
+  hint: RuntimeResourceHint,
+  job: ModelBuildJob,
+  appearance: VAppearancePreset,
+  tools: ToolStatus,
+): Promise<EntityAppearanceMatch | null> {
+  if (!tools.wolvenKit.path || !hint.entityName || !hint.appearanceName) {
+    return null;
+  }
+
+  const entityPath = ENTITY_RESOURCE_BY_NAME[hint.entityName];
+  if (!entityPath) {
+    pushLog(job, `${hint.record || hint.entityName} 暂不支持 entityName=${hint.entityName} 的自动实体解析。`);
+    return null;
+  }
+
+  const json = await readSerializedResourceJson(tools.wolvenKit.path, job.gameDir, job.saveId, entityPath, (line) =>
+    pushLog(job, line),
+  );
+  const appearances = json?.Data?.RootChunk?.appearances;
+  if (!Array.isArray(appearances)) {
+    pushLog(job, `${entityPath} 未找到 appearances 列表。`);
+    return null;
+  }
+
+  const candidates = appearances
+    .map((entry: unknown) => {
+      const data = (entry as { Data?: unknown })?.Data || entry;
+      const appPath = getJsonString((data as { appearanceResource?: { DepotPath?: unknown } })?.appearanceResource?.DepotPath);
+      const name = getJsonString((data as { name?: unknown })?.name);
+      const appAppearanceName = getJsonString((data as { appearanceName?: unknown })?.appearanceName);
+      return {
+        appPath,
+        name,
+        appAppearanceName,
+        score: scoreEntityAppearance({ name, appAppearanceName }, hint, appearance),
+      };
+    })
+    .filter((item) => item.appPath && item.appAppearanceName && item.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  const best = candidates[0];
+  if (!best) {
+    pushLog(job, `${hint.record || hint.appearanceName} 未在 ${entityPath} 中匹配到 ${hint.appearanceName}。`);
+    return null;
+  }
+
+  pushLog(job, `${hint.record || hint.appearanceName} -> ${best.name} -> ${best.appPath} / ${best.appAppearanceName}`);
+  return {
+    entityPath,
+    appPath: best.appPath,
+    entityAppearanceName: best.name,
+    appAppearanceName: best.appAppearanceName,
+  };
+}
+
+function scoreAppAppearance(name: string, target: string) {
+  const current = name.toLowerCase();
+  const wanted = target.toLowerCase();
+  let score = 0;
+  if (current === wanted) score += 100;
+  if (current.includes(wanted)) score += 80;
+  if (current.includes(wanted.replace(/_fpp$/i, ""))) score += 30;
+  if (current.includes("_fpp")) score -= 20;
+  return score;
+}
+
+async function resolveAppAppearanceMeshes(match: EntityAppearanceMatch, job: ModelBuildJob, tools: ToolStatus) {
+  if (!tools.wolvenKit.path) {
+    return [];
+  }
+  const json = await readSerializedResourceJson(tools.wolvenKit.path, job.gameDir, job.saveId, match.appPath, (line) =>
+    pushLog(job, line),
+  );
+  const appearances = json?.Data?.RootChunk?.appearances;
+  if (!Array.isArray(appearances)) {
+    pushLog(job, `${match.appPath} 未找到 appearances 列表。`);
+    return [];
+  }
+
+  const candidates = appearances
+    .map((entry: unknown) => {
+      const data = (entry as { Data?: unknown })?.Data || entry;
+      const name = getJsonString((data as { name?: unknown })?.name);
+      return {
+        name,
+        data,
+        score: scoreAppAppearance(name, match.appAppearanceName),
+      };
+    })
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  const best = candidates[0];
+  if (!best) {
+    pushLog(job, `${match.appPath} 未找到 appearance=${match.appAppearanceName} 的 mesh 分支。`);
+    return [];
+  }
+
+  const meshes = [...collectMeshPaths(best.data)];
+  if (meshes.length) {
+    pushLog(job, `${match.appAppearanceName} 解析到 ${meshes.length} 个 mesh。`);
+  } else {
+    pushLog(job, `${match.appAppearanceName} 没有解析到 mesh。`);
+  }
+  return meshes;
+}
+
+function strongArmsMeshes(variant: VAppearancePreset["bodyVariant"]) {
+  const prefix =
+    variant === "pma"
+      ? "base\\characters\\cyberware\\player\\a0_005__strongarms\\entities\\meshes\\a0_005_ma__strongarms"
+      : "base\\characters\\cyberware\\player\\a0_005__strongarms\\entities\\meshes\\a0_005_wa__strongarms";
+  return [`${prefix}_l.mesh`, `${prefix}_r.mesh`, `${prefix}_cyberware_l.mesh`, `${prefix}_cyberware_r.mesh`];
+}
+
+async function resolveRuntimeSlotMeshes(
+  role: "clothing" | "weapon",
+  slot: LoadoutSlot,
+  job: ModelBuildJob,
+  appearance: VAppearancePreset,
+  tools: ToolStatus,
+) {
+  const hint = slotRuntimeHint(slot);
+  if (!hint) {
+    return [];
+  }
+
+  const text = `${hint.record} ${hint.entityName} ${hint.itemType} ${hint.equipArea}`;
+  if (role === "weapon" && /StrongArms|Cyb_StrongArms|ArmsCW|a0_005__strongarms/i.test(text)) {
+    const meshes = strongArmsMeshes(appearance.bodyVariant);
+    pushLog(job, `${hint.record || "StrongArms"} 使用大猩猩手臂 mesh：${meshes.join("、")}`);
+    return meshes;
+  }
+
+  if (role !== "clothing") {
+    return [];
+  }
+
+  const match = await resolveEntityAppearance(hint, job, appearance, tools);
+  if (!match) {
+    return [];
+  }
+  return resolveAppAppearanceMeshes(match, job, tools);
+}
+
 async function resolveLoadoutResources(
   role: "clothing" | "weapon",
   slots: LoadoutSlot[],
@@ -606,8 +876,9 @@ async function resolveLoadoutResources(
   appearance: VAppearancePreset,
   tools: ToolStatus,
 ) {
-  const explicit = slots.flatMap((slot) => slot.resolvedResourcePaths);
-  const discovered: string[] = [];
+  const explicit = slots
+    .flatMap((slot) => slot.resolvedResourcePaths)
+    .filter((resourcePath) => /\.mesh$/i.test(resourcePath));
   if (!tools.wolvenKit.path) {
     return explicit;
   }
@@ -629,6 +900,55 @@ async function resolveLoadoutResources(
       names.push(...slotNames.slice(0, 1));
     }
   }
+
+  if (names.length) {
+    pushLog(
+      job,
+      `已识别到 ${role === "clothing" ? "服装" : "武器"} TweakDB 线索：${names
+        .slice(0, 6)
+        .join("、")}。严格还原模式不会再用文件名猜测 mesh，下一步需要解析 TweakDB -> .ent/.app -> 组件 mesh 的真实链路。`,
+    );
+  }
+
+  const resolved: string[] = [...explicit];
+  for (const slotId of slotOrder) {
+    const slot = slots.find((item) => item.slot === slotId);
+    if (!slot?.detected) {
+      continue;
+    }
+    const meshes = await resolveRuntimeSlotMeshes(role, slot, job, appearance, tools);
+    resolved.push(...meshes);
+  }
+
+  return distinctLimited(resolved, role === "clothing" ? 18 : 10);
+}
+
+async function probeHeuristicLoadoutCandidates(
+  role: "clothing" | "weapon",
+  slots: LoadoutSlot[],
+  job: ModelBuildJob,
+  appearance: VAppearancePreset,
+  tools: ToolStatus,
+) {
+  const discovered: string[] = [];
+  if (!tools.wolvenKit.path) {
+    return discovered;
+  }
+
+  const slotOrder =
+    role === "clothing"
+      ? ["OuterChest", "InnerChest", "Legs", "Feet", "Face", "Head", "Outfit"]
+      : ["PrimaryWeapon", "Sidearm", "Melee", "QuickSlot"];
+  const names: string[] = [];
+  for (const slotId of slotOrder) {
+    const slot = slots.find((item) => item.slot === slotId);
+    if (!slot) {
+      continue;
+    }
+    const slotNames = slot.rawHints.filter((hint) => /^Items\./i.test(hint));
+    names.push(...slotNames.slice(0, 1));
+  }
+
   for (const name of names) {
     const matches = await searchArchiveMeshesForItem(
       tools.wolvenKit.path,
@@ -645,7 +965,7 @@ async function resolveLoadoutResources(
     discovered.push(...usable);
   }
 
-  return distinctLimited([...explicit, ...discovered], role === "clothing" ? 7 : 4);
+  return distinctLimited(discovered, role === "clothing" ? 7 : 4);
 }
 
 async function writeBlenderAssemblyScript(saveId: string, appearance: VAppearancePreset, sourceGlbs: string[]) {
@@ -809,6 +1129,12 @@ ROLE_TO_MATERIAL = {
 def material_for_role(role):
     return MATERIALS.get(ROLE_TO_MATERIAL.get(role, "fallback"), MATERIALS["fallback"])
 
+def ensure_material(source, obj):
+    has_material = any(slot.material is not None for slot in obj.material_slots)
+    if has_material:
+        return
+    obj.data.materials.append(material_for_role(source["role"]))
+
 def import_source(source):
     path = source["glbPath"]
     if not os.path.exists(path):
@@ -818,13 +1144,11 @@ def import_source(source):
     print("import", source["role"], path)
     bpy.ops.import_scene.gltf(filepath=path)
     added = [obj for obj in bpy.context.scene.objects if obj not in before and obj.type == "MESH"]
-    mat = material_for_role(source["role"])
     for obj in added:
         obj.name = "${label} " + source["label"] + " " + obj.name
         obj["cp2077_role"] = source["role"]
         obj["cp2077_source"] = source["resourcePath"]
-        obj.data.materials.clear()
-        obj.data.materials.append(mat)
+        ensure_material(source, obj)
         obj.select_set(True)
     return added
 
@@ -1072,7 +1396,7 @@ async function attemptEnhancedExternalBuild(
   await addMesh("head", "头部", resources.headMesh, true);
 
   setJob(job, { progress: 68, title: "导出手臂和手" });
-  await addMesh("arms", "手臂/手", resources.armsMesh, false);
+  await addMesh("arms", "手臂/手", resources.armsMesh, true);
 
   for (const hairMesh of resources.hairMeshes || []) {
     await addMesh("hair", "发型", hairMesh, false);
@@ -1092,7 +1416,9 @@ async function attemptEnhancedExternalBuild(
     setJob(job, { progress: 72, title: "搜索并导出存档服装" });
     clothingResources = await resolveLoadoutResources("clothing", loadout.clothingSlots, job, appearance, tools);
     if (!clothingResources.length) {
-      pushLog(job, "已启用存档服装，但当前只能识别槽位/物品线索，还没有解析到可直接导出的服装 mesh。");
+      throw new Error(
+        "已启用存档服装，但当前还没有从存档解析出精确的服装 .ent/.app/.mesh 资源链路。为避免生成错误穿搭，已停止构建；下一步需要完成 TweakDB -> entity/app -> mesh 解析，或从游戏运行时导出当前装备状态。",
+      );
     }
     for (const resourcePath of clothingResources) {
       await addMesh("clothing", "存档服装", resourcePath, false);
@@ -1103,7 +1429,9 @@ async function attemptEnhancedExternalBuild(
     setJob(job, { progress: 76, title: "搜索并导出存档武器" });
     weaponResources = await resolveLoadoutResources("weapon", loadout.weaponSlots, job, appearance, tools);
     if (!weaponResources.length) {
-      pushLog(job, "已启用存档武器，但当前只能识别武器线索，还没有解析到可直接导出的武器 mesh。");
+      throw new Error(
+        "已启用存档武器，但当前还没有从存档解析出精确的武器 .ent/.app/.mesh 资源链路。为避免生成错误武器，已停止构建；下一步需要完成 TweakDB -> entity/app -> mesh 解析，或从游戏运行时导出当前装备状态。",
+      );
     }
     for (const resourcePath of weaponResources) {
       await addMesh("weapon", "存档武器", resourcePath, false);
